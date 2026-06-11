@@ -515,14 +515,15 @@ function loadVRM(type) {
       const vrm = gltf.userData.vrm;
       c.VRMUtils.rotateVRM0(vrm); // VRM0系モデルでも正面を向くように
 
-      // Tポーズのままだと腕が映り込むので下ろす(VRM0と1で回転方向が逆)
-      const armZ = vrm.meta && vrm.meta.metaVersion === "0" ? 1.2 : -1.2;
+      // VRM0系は正規化ボーンのX軸・Z軸の回転方向がVRM1と逆になる
+      const axisSign = vrm.meta && vrm.meta.metaVersion === "0" ? -1 : 1;
+      // Tポーズのままだと腕が映り込むので下ろす
       const lArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
       const rArm = vrm.humanoid.getNormalizedBoneNode("rightUpperArm");
-      if (lArm) lArm.rotation.z = armZ;
-      if (rArm) rArm.rotation.z = -armZ;
+      if (lArm) lArm.rotation.z = -1.2 * axisSign;
+      if (rArm) rArm.rotation.z = 1.2 * axisSign;
       vrm.humanoid.update();
-      return { vrm };
+      return { vrm, axisSign };
     })().catch((err) => {
       console.warn(`3Dアバター(${def.label})を読み込めませんでした`, err);
       delete vrmModels[type]; // 次回再試行できるようにする
@@ -547,9 +548,10 @@ async function activateVRM(type) {
   const head = model.vrm.humanoid.getNormalizedBoneNode("head");
   const p = new vrmCtx.THREE.Vector3();
   head.getWorldPosition(p);
-  // 頭のボーンより上に髪などがあるため、十分に引いて頭全体+肩を収める
-  vrmCtx.camera.position.set(p.x, p.y + 0.02, p.z + 0.95);
-  vrmCtx.camera.lookAt(p.x, p.y - 0.01, p.z);
+  // 十分に引いて頭全体+肩を収め、注視点を頭より上にして
+  // 頭上に少し空間が空く(アバターがやや下に映る)構図にする
+  vrmCtx.camera.position.set(p.x, p.y + 0.1, p.z + 0.95);
+  vrmCtx.camera.lookAt(p.x, p.y + 0.07, p.z);
   return vrmActive;
 }
 
@@ -569,10 +571,11 @@ function updateVRMFrame() {
   }
   const head = vrm.humanoid.getNormalizedBoneNode("head");
   if (head) {
+    const sign = vrmActive.model.axisSign || 1; // VRM0はX軸・Z軸の回転が逆
     head.rotation.set(
-      faceCur.pitch * 0.5,         // うなずき(下を向くと+)
+      faceCur.pitch * 0.5 * sign,  // うなずき(下を向くと+)
       faceCur.x / 160 * 0.6,       // 左右の向き
-      faceCur.roll * 0.6           // 首かしげ
+      faceCur.roll * 0.6 * sign    // 首かしげ
     );
   }
   vrm.update(clock.getDelta());

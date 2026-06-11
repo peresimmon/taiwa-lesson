@@ -5,8 +5,8 @@
 | ファイル | アプリ内の名前 | 出典 | ライセンス |
 |---|---|---|---|
 | `avatar_real.vrm` | ひなた | [pixiv/three-vrm](https://github.com/pixiv/three-vrm) サンプル (VRM1_Constraint_Twist_Sample) | [VRM Public License 1.0](https://vrm.dev/licenses/1.0/)、利用許可 everyone |
-| `avatar_fem.vrm` | つむぎ | [VRoid Studio サンプル(フェミニン)](https://vroid.pixiv.help/hc/en-us/articles/4402614652569) | CC0 |
-| `avatar_masc.vrm` | たける | [VRoid Studio サンプル(マスキュリン)](https://vroid.pixiv.help/hc/en-us/articles/4402614652569) | CC0 |
+| `avatar_fem.vrm` | つむぎ | VRoid サンプル Sendagaya Shino (メタ情報: CC0) | CC0 |
+| `avatar_masc.vrm` | たける | VRoid サンプル Sendagaya Shibu (メタ情報: CC0) | CC0 |
 | `avatar_sample_c.vrm` | れん | [VRoid Studio AvatarSample_C](https://vroid.pixiv.help/hc/en-us/articles/4402394424089) | VRoid利用条件(改変・配布可、商用可、allowedUser=Everyone) |
 | `avatar_seed.vrm` | シード | [vrm-c/vrm-specification](https://github.com/vrm-c/vrm-specification) Seed-san (by VirtualCast, Inc.) | [VRM Public License 1.0](https://vrm.dev/licenses/1.0/) |
 
