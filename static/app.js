@@ -175,6 +175,7 @@ async function handleWSMessage(msg) {
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
       loadFaceLandmarker(); // 同意画面の間にモデルを先読みしておく
+      renderAvatarPicker();
       showScreen("consent");
       break;
 
@@ -391,10 +392,85 @@ function updateFaceFromResult(res) {
   faceTgt.brow = (bs.browInnerUp || 0) - ((bs.browDownLeft || 0) + (bs.browDownRight || 0)) / 2;
 }
 
-function drawAvatar() {
-  const ctx = avatarCtx;
-  const W = avatarCanvas.width, H = avatarCanvas.height;
+// ---- アバターの種類 -----------------------------------------------------------
+const AVATARS = {
+  maru: { label: "まる" },
+  neko: { label: "ねこ" },
+  usagi: { label: "うさぎ" },
+  kuma: { label: "くま" },
+  hito: { label: "ひと" },
+};
+let avatarType = localStorage.getItem("vm_avatar") || "maru";
+if (!AVATARS[avatarType]) avatarType = "maru";
 
+function drawAvatar() {
+  drawAvatarOn(avatarCtx, avatarCanvas.width, avatarCanvas.height, avatarType, myRole, faceCur);
+}
+
+/* ほっぺ */
+function drawCheeks(ctx, color, y = 22) {
+  ctx.fillStyle = color;
+  for (const sx of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(sx * 56, y, 13, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* 目・まゆ・口(全アバター共通。pで配色と位置を切り替える) */
+function drawFaceParts(ctx, f, p) {
+  for (const [sx, blink] of [[-1, f.blinkL], [1, f.blinkR]]) {
+    const ex = sx * 36, ey = p.eyeY;
+    if (blink > 0.6) {
+      // 閉じ目は弧で描く
+      ctx.strokeStyle = p.closedColor;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 12, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+    } else if (p.eyeStyle === "sclera") {
+      // 白目+瞳
+      ctx.fillStyle = p.eyeColor;
+      ctx.beginPath();
+      ctx.ellipse(ex, ey, 13, 13 * (1 - blink * 0.7), 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = p.pupilColor;
+      ctx.beginPath();
+      ctx.arc(ex, ey + 1, 6, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // 黒目だけ(動物向け)
+      ctx.fillStyle = p.pupilColor;
+      ctx.beginPath();
+      ctx.ellipse(ex, ey, 9, 10 * (1 - blink * 0.7), 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.beginPath();
+      ctx.arc(ex + 3, ey - 3, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // まゆ(驚くと上がり、ひそめると下がる)
+    ctx.strokeStyle = p.browColor;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(ex - 12, ey - 24 - f.brow * 10);
+    ctx.quadraticCurveTo(ex, ey - 30 - f.brow * 12, ex + 12, ey - 24 - f.brow * 10);
+    ctx.stroke();
+  }
+  // 口(開閉と笑顔に追従)
+  const mw = (p.mouthW || 34) + f.smile * 16;
+  const open = 3 + f.jaw * (p.openScale || 32);
+  const my = p.mouthY;
+  ctx.fillStyle = p.mouthColor;
+  ctx.beginPath();
+  ctx.moveTo(-mw / 2, my - f.smile * 6);
+  ctx.quadraticCurveTo(0, my - f.smile * 16, mw / 2, my - f.smile * 6);
+  ctx.quadraticCurveTo(0, my + open, -mw / 2, my - f.smile * 6);
+  ctx.fill();
+}
+
+/* アバター本体。fは表情状態(faceCurと同じ形)。サムネイル描画にも使う */
+function drawAvatarOn(ctx, W, H, type, role, f) {
   // 背景(ブランドの生成り色グラデーション)
   const bg = ctx.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, "#f8f0e5");
@@ -402,92 +478,252 @@ function drawAvatar() {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // 役割で色分け: 話し手=オレンジ / 聞き手=ネイビー
-  const headColor = myRole === "speaker" ? "#ee6c4d" : "#3d5a80";
-  const headDark = myRole === "speaker" ? "#d4553a" : "#2c4460";
-
-  // からだ(頭の動きに少しだけ追従)
-  ctx.fillStyle = headDark;
-  ctx.beginPath();
-  ctx.ellipse(W / 2 + faceCur.x * 0.4, H - 16, 92, 58, 0, Math.PI, 2 * Math.PI);
-  ctx.fill();
+  // 役割の色: 話し手=オレンジ / 聞き手=ネイビー
+  const roleMain = role === "speaker" ? "#ee6c4d" : "#3d5a80";
+  const roleDark = role === "speaker" ? "#d4553a" : "#2c4460";
 
   ctx.save();
-  ctx.translate(W / 2 + faceCur.x, H / 2 + 10 + faceCur.y);
-  ctx.rotate(faceCur.roll * 0.7);
+  ctx.scale(W / 480, H / 360); // 以降は480x360の座標系で描く
 
-  // 頭
-  ctx.fillStyle = headColor;
-  ctx.beginPath();
-  ctx.arc(0, 0, 96, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 頭の上の葉っぱ(「聴く力を育てる」モチーフ)
-  ctx.strokeStyle = "#588157";
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  ctx.moveTo(0, -94);
-  ctx.quadraticCurveTo(4, -110, 2, -118);
-  ctx.stroke();
-  ctx.fillStyle = "#588157";
-  ctx.beginPath();
-  ctx.ellipse(10, -122, 14, 8, -0.5, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 顔のパネル(うっすら明るく)
-  ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
-  ctx.beginPath();
-  ctx.ellipse(0, 16, 66, 58, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ほっぺ
-  ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
-  for (const sx of [-1, 1]) {
+  // からだ(頭の動きに少しだけ追従)
+  const bodyX = 240 + f.x * 0.4;
+  if (type === "hito") {
+    // 肩(シャツは役割色)
+    ctx.fillStyle = roleMain;
     ctx.beginPath();
-    ctx.ellipse(sx * 56, 22, 13, 9, 0, 0, Math.PI * 2);
+    ctx.ellipse(bodyX, 372, 116, 78, 0, Math.PI, 2 * Math.PI);
     ctx.fill();
-  }
-
-  // 目とまゆ
-  for (const [sx, blink] of [[-1, faceCur.blinkL], [1, faceCur.blinkR]]) {
-    const ex = sx * 36, ey = -12;
-    if (blink > 0.6) {
-      // 閉じ目は弧で描く
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 4;
+  } else {
+    const bodyColor = { maru: roleDark, neko: "#8e96a3", usagi: "#e7decd", kuma: "#9c7350" }[type];
+    ctx.fillStyle = bodyColor;
+    ctx.beginPath();
+    ctx.ellipse(bodyX, 344, 92, 58, 0, Math.PI, 2 * Math.PI);
+    ctx.fill();
+    if (type !== "maru") {
+      // 動物には役割色のマフラー
+      ctx.fillStyle = roleMain;
       ctx.beginPath();
-      ctx.arc(ex, ey, 12, 0.15 * Math.PI, 0.85 * Math.PI);
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.ellipse(ex, ey, 13, 13 * (1 - blink * 0.7), 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#27313f";
-      ctx.beginPath();
-      ctx.arc(ex, ey + 1, 6, 0, Math.PI * 2);
+      ctx.ellipse(bodyX, 290, 60, 15, 0, 0, Math.PI * 2);
       ctx.fill();
     }
-    // まゆ(驚くと上がり、ひそめると下がる)
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(ex - 12, ey - 24 - faceCur.brow * 10);
-    ctx.quadraticCurveTo(ex, ey - 30 - faceCur.brow * 12, ex + 12, ey - 24 - faceCur.brow * 10);
-    ctx.stroke();
   }
 
-  // 口(開閉と笑顔に追従)
-  const mw = 34 + faceCur.smile * 16;
-  const open = 3 + faceCur.jaw * 32;
-  ctx.fillStyle = "#27313f";
-  ctx.beginPath();
-  ctx.moveTo(-mw / 2, 38 - faceCur.smile * 6);
-  ctx.quadraticCurveTo(0, 38 - faceCur.smile * 16, mw / 2, 38 - faceCur.smile * 6);
-  ctx.quadraticCurveTo(0, 38 + open, -mw / 2, 38 - faceCur.smile * 6);
-  ctx.fill();
+  ctx.save();
+  ctx.translate(240 + f.x, 190 + f.y);
+  ctx.rotate(f.roll * 0.7);
+
+  if (type === "maru") {
+    ctx.fillStyle = roleMain;
+    ctx.beginPath();
+    ctx.arc(0, 0, 96, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭の上の葉っぱ(「聴く力を育てる」モチーフ)
+    ctx.strokeStyle = "#588157";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(0, -94);
+    ctx.quadraticCurveTo(4, -110, 2, -118);
+    ctx.stroke();
+    ctx.fillStyle = "#588157";
+    ctx.beginPath();
+    ctx.ellipse(10, -122, 14, 8, -0.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 顔のパネル(うっすら明るく)
+    ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
+    ctx.beginPath();
+    ctx.ellipse(0, 16, 66, 58, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawCheeks(ctx, "rgba(255, 255, 255, 0.25)");
+    drawFaceParts(ctx, f, {
+      eyeStyle: "sclera", eyeColor: "#fff", pupilColor: "#27313f",
+      browColor: "rgba(255, 255, 255, 0.85)", closedColor: "#fff",
+      mouthColor: "#27313f", eyeY: -12, mouthY: 38,
+    });
+  } else if (type === "neko") {
+    // 耳(頭より先に描いて後ろに重ねる)
+    for (const sx of [-1, 1]) {
+      ctx.fillStyle = "#aab2bf";
+      ctx.beginPath();
+      ctx.moveTo(sx * 38, -78);
+      ctx.lineTo(sx * 88, -118);
+      ctx.lineTo(sx * 84, -52);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#f3b8c0";
+      ctx.beginPath();
+      ctx.moveTo(sx * 50, -76);
+      ctx.lineTo(sx * 78, -100);
+      ctx.lineTo(sx * 76, -62);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = "#aab2bf";
+    ctx.beginPath();
+    ctx.arc(0, 0, 92, 0, Math.PI * 2);
+    ctx.fill();
+    // 口元の白いマズル
+    ctx.fillStyle = "#f4f1ea";
+    ctx.beginPath();
+    ctx.ellipse(0, 36, 44, 32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 鼻
+    ctx.fillStyle = "#e88a96";
+    ctx.beginPath();
+    ctx.moveTo(-7, 18);
+    ctx.lineTo(7, 18);
+    ctx.lineTo(0, 28);
+    ctx.closePath();
+    ctx.fill();
+    // ひげ
+    ctx.strokeStyle = "rgba(70, 80, 95, 0.55)";
+    ctx.lineWidth = 2;
+    for (const sx of [-1, 1]) {
+      for (const [dy, tilt] of [[-2, -6], [8, 0], [18, 6]]) {
+        ctx.beginPath();
+        ctx.moveTo(sx * 48, 28 + dy);
+        ctx.lineTo(sx * 96, 22 + dy + tilt);
+        ctx.stroke();
+      }
+    }
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.22)");
+    drawFaceParts(ctx, f, {
+      eyeStyle: "sclera", eyeColor: "#fff", pupilColor: "#3a4250",
+      browColor: "rgba(70, 80, 95, 0.7)", closedColor: "#3a4250",
+      mouthColor: "#7a4a52", eyeY: -16, mouthY: 42, mouthW: 26, openScale: 24,
+    });
+  } else if (type === "usagi") {
+    // 長い耳
+    for (const sx of [-1, 1]) {
+      ctx.save();
+      ctx.translate(sx * 40, -84);
+      ctx.rotate(sx * 0.18);
+      ctx.fillStyle = "#f6f0e4";
+      ctx.beginPath();
+      ctx.ellipse(0, -52, 24, 64, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#f3b8c0";
+      ctx.beginPath();
+      ctx.ellipse(0, -48, 12, 44, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.fillStyle = "#f6f0e4";
+    ctx.beginPath();
+    ctx.arc(0, 0, 92, 0, Math.PI * 2);
+    ctx.fill();
+    // 鼻
+    ctx.fillStyle = "#e88a96";
+    ctx.beginPath();
+    ctx.moveTo(-6, 20);
+    ctx.lineTo(6, 20);
+    ctx.lineTo(0, 29);
+    ctx.closePath();
+    ctx.fill();
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.25)");
+    drawFaceParts(ctx, f, {
+      eyeStyle: "dot", pupilColor: "#4a3f38",
+      browColor: "rgba(120, 100, 85, 0.7)", closedColor: "#4a3f38",
+      mouthColor: "#7a4a52", eyeY: -14, mouthY: 40, mouthW: 24, openScale: 22,
+    });
+  } else if (type === "kuma") {
+    // 丸い耳
+    for (const sx of [-1, 1]) {
+      ctx.fillStyle = "#b58a64";
+      ctx.beginPath();
+      ctx.arc(sx * 64, -72, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#8a6347";
+      ctx.beginPath();
+      ctx.arc(sx * 64, -72, 16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#b58a64";
+    ctx.beginPath();
+    ctx.arc(0, 0, 92, 0, Math.PI * 2);
+    ctx.fill();
+    // マズル
+    ctx.fillStyle = "#e8d3b8";
+    ctx.beginPath();
+    ctx.ellipse(0, 34, 42, 32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 鼻
+    ctx.fillStyle = "#5d4534";
+    ctx.beginPath();
+    ctx.ellipse(0, 20, 10, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.2)");
+    drawFaceParts(ctx, f, {
+      eyeStyle: "dot", pupilColor: "#3f3128",
+      browColor: "rgba(90, 70, 52, 0.8)", closedColor: "#3f3128",
+      mouthColor: "#6b4b38", eyeY: -16, mouthY: 42, mouthW: 26, openScale: 24,
+    });
+  } else if (type === "hito") {
+    // 首
+    ctx.fillStyle = "#f0c8a2";
+    ctx.fillRect(-22, 70, 44, 48);
+    // 耳
+    for (const sx of [-1, 1]) {
+      ctx.fillStyle = "#f0c8a2";
+      ctx.beginPath();
+      ctx.arc(sx * 86, 4, 16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 顔(少し縦長)
+    ctx.fillStyle = "#f4cda6";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 88, 96, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 髪(前髪つきショート)
+    ctx.fillStyle = "#4d3a2c";
+    ctx.beginPath();
+    ctx.moveTo(-90, -2);
+    ctx.quadraticCurveTo(-96, -60, -52, -86);
+    ctx.quadraticCurveTo(0, -108, 52, -86);
+    ctx.quadraticCurveTo(96, -60, 90, -2);
+    ctx.quadraticCurveTo(74, -36, 54, -44);
+    ctx.quadraticCurveTo(36, -28, 18, -46);
+    ctx.quadraticCurveTo(0, -30, -18, -46);
+    ctx.quadraticCurveTo(-36, -28, -54, -44);
+    ctx.quadraticCurveTo(-74, -36, -90, -2);
+    ctx.closePath();
+    ctx.fill();
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.18)", 26);
+    drawFaceParts(ctx, f, {
+      eyeStyle: "sclera", eyeColor: "#fff", pupilColor: "#3a3026",
+      browColor: "#4d3a2c", closedColor: "#3a3026",
+      mouthColor: "#a8493f", eyeY: -6, mouthY: 44,
+    });
+  }
 
   ctx.restore();
+  ctx.restore();
+}
+
+/* 同意画面のアバター選択サムネイルを描画する */
+function renderAvatarPicker() {
+  const list = $("avatar-list");
+  list.innerHTML = "";
+  const preview = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0.15, smile: 0.45, brow: 0.1 };
+  for (const [type, def] of Object.entries(AVATARS)) {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "avatar-option" + (type === avatarType ? " selected" : "");
+    const cv = document.createElement("canvas");
+    cv.width = 96;
+    cv.height = 72;
+    drawAvatarOn(cv.getContext("2d"), 96, 72, type, myRole || "listener", preview);
+    const label = document.createElement("small");
+    label.textContent = def.label;
+    opt.appendChild(cv);
+    opt.appendChild(label);
+    opt.onclick = () => {
+      avatarType = type;
+      localStorage.setItem("vm_avatar", type);
+      list.querySelectorAll(".avatar-option").forEach((el) => el.classList.remove("selected"));
+      opt.classList.add("selected");
+    };
+    list.appendChild(opt);
+  }
 }
 
 // ---- WebRTC通話 -----------------------------------------------------------------

@@ -141,6 +141,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .consent-box h3 { margin-bottom: 10px; font-size: 1rem; color: var(--primary); }
 .consent-box ul { padding-left: 20px; line-height: 2; font-size: 0.92rem; color: var(--text); }
 
+/* アバター選択 */
+.avatar-select h3 { font-size: 0.95rem; color: var(--primary); margin: 14px 0 8px; }
+.avatar-list { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.avatar-option {
+  border: 2px solid var(--border); border-radius: 12px; padding: 6px 6px 3px;
+  background: var(--card); cursor: pointer; text-align: center;
+  transition: all 0.15s;
+}
+.avatar-option canvas { border-radius: 8px; display: block; }
+.avatar-option small { font-size: 0.72rem; color: var(--muted); }
+.avatar-option:hover { border-color: var(--primary); }
+.avatar-option.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(238, 108, 77, 0.15);
+}
+
 /* 通話(セッション)画面 */
 .call-info {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
