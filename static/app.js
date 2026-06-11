@@ -174,6 +174,7 @@ async function handleWSMessage(msg) {
       $("consent-status").textContent = "";
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
+      loadFaceLandmarker(); // 同意画面の間にモデルを先読みしておく
       showScreen("consent");
       break;
 
@@ -247,7 +248,7 @@ $("btn-consent-ok").onclick = async () => {
   $("btn-consent-ng").disabled = true;
   $("consent-status").textContent = "カメラ・マイクを準備しています…";
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    rawStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   } catch (err) {
     $("consent-status").textContent = "";
     $("lobby-error").textContent =
@@ -256,6 +257,8 @@ $("btn-consent-ok").onclick = async () => {
     showLobby();
     return;
   }
+  $("consent-status").textContent = "アバターを準備しています…";
+  localStream = await buildAvatarStream();
   $("consent-status").textContent = "相手の同意を待っています…";
   wsSend({ type: "consent", accept: true });
 };
@@ -265,6 +268,227 @@ $("btn-consent-ng").onclick = () => {
   cleanupCall();
   showLobby();
 };
+
+// ---- アバター(MediaPipe顔トラッキング) ------------------------------------
+// カメラの実映像は顔の動きの解析だけに使い、ネットワークには一切流さない。
+// 相手にはCanvasに描いたアバターを captureStream() で送る。
+const MEDIAPIPE_VERSION = "0.10.14";
+let faceLandmarker = null;
+let landmarkerPromise = null;
+let rawStream = null;     // カメラ・マイクの生ストリーム(端末内に閉じる)
+let avatarCanvas = null;
+let avatarCtx = null;
+let avatarLoop = null;
+let audioCtxRef = null;
+let audioAnalyser = null; // トラッキング不可時のフォールバック(声で口を動かす)
+
+// 表情の現在値と目標値。毎フレーム補間してなめらかに動かす
+const faceCur = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
+const faceTgt = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
+
+function loadFaceLandmarker() {
+  if (!landmarkerPromise) {
+    landmarkerPromise = (async () => {
+      const vision = await import(
+        `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/+esm`
+      );
+      const fileset = await vision.FilesetResolver.forVisionTasks(
+        `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
+      );
+      faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numFaces: 1,
+        outputFaceBlendshapes: true,
+      });
+      return faceLandmarker;
+    })().catch((err) => {
+      console.warn("顔トラッキングを初期化できませんでした。音声連動にフォールバックします", err);
+      landmarkerPromise = null; // 次回の通話で再試行できるようにする
+      return null;
+    });
+  }
+  return landmarkerPromise;
+}
+
+async function buildAvatarStream() {
+  avatarCanvas = document.createElement("canvas");
+  avatarCanvas.width = 480;
+  avatarCanvas.height = 360;
+  avatarCtx = avatarCanvas.getContext("2d");
+
+  // トラッキング用の非表示video。画面にもネットワークにも出さない
+  const trackVideo = document.createElement("video");
+  trackVideo.muted = true;
+  trackVideo.playsInline = true;
+  trackVideo.srcObject = new MediaStream(rawStream.getVideoTracks());
+  await trackVideo.play().catch(() => {});
+
+  await loadFaceLandmarker();
+  if (!faceLandmarker) setupAudioFallback();
+
+  startAvatarLoop(trackVideo);
+
+  const stream = avatarCanvas.captureStream(24);
+  rawStream.getAudioTracks().forEach((t) => stream.addTrack(t));
+  return stream;
+}
+
+function setupAudioFallback() {
+  try {
+    audioCtxRef = new AudioContext();
+    const src = audioCtxRef.createMediaStreamSource(rawStream);
+    audioAnalyser = audioCtxRef.createAnalyser();
+    audioAnalyser.fftSize = 256;
+    src.connect(audioAnalyser);
+  } catch { /* 口は動かないが通話自体は続行できる */ }
+}
+
+function startAvatarLoop(trackVideo) {
+  let lastVideoTime = -1;
+  const tick = () => {
+    if (faceLandmarker && trackVideo.readyState >= 2 && trackVideo.currentTime !== lastVideoTime) {
+      lastVideoTime = trackVideo.currentTime;
+      try {
+        updateFaceFromResult(faceLandmarker.detectForVideo(trackVideo, performance.now()));
+      } catch { /* 一時的な解析失敗は無視 */ }
+    }
+    if (!faceLandmarker && audioAnalyser) {
+      const buf = new Uint8Array(audioAnalyser.frequencyBinCount);
+      audioAnalyser.getByteFrequencyData(buf);
+      const vol = buf.reduce((a, b) => a + b, 0) / buf.length / 255;
+      faceTgt.jaw = Math.min(1, vol * 4);
+    }
+    for (const k of Object.keys(faceCur)) {
+      faceCur[k] += (faceTgt[k] - faceCur[k]) * 0.35;
+    }
+    drawAvatar();
+    avatarLoop = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function updateFaceFromResult(res) {
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  if (!lm) return;
+  const eyeL = lm[33], eyeR = lm[263], nose = lm[1];
+  // ミラー表示(自分が右を向いたらアバターも画面上で右)になるよう左右を反転
+  faceTgt.roll = -Math.atan2(eyeR.y - eyeL.y, eyeR.x - eyeL.x);
+  faceTgt.x = (0.5 - nose.x) * 160;
+  faceTgt.y = (nose.y - 0.5) * 120;
+  const bs = {};
+  if (res.faceBlendshapes && res.faceBlendshapes[0]) {
+    for (const c of res.faceBlendshapes[0].categories) bs[c.categoryName] = c.score;
+  }
+  faceTgt.blinkL = bs.eyeBlinkRight || 0; // ミラーなので左右を入れ替える
+  faceTgt.blinkR = bs.eyeBlinkLeft || 0;
+  faceTgt.jaw = bs.jawOpen || 0;
+  faceTgt.smile = ((bs.mouthSmileLeft || 0) + (bs.mouthSmileRight || 0)) / 2;
+  faceTgt.brow = (bs.browInnerUp || 0) - ((bs.browDownLeft || 0) + (bs.browDownRight || 0)) / 2;
+}
+
+function drawAvatar() {
+  const ctx = avatarCtx;
+  const W = avatarCanvas.width, H = avatarCanvas.height;
+
+  // 背景(ブランドの生成り色グラデーション)
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#f8f0e5");
+  bg.addColorStop(1, "#e8d5bf");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 役割で色分け: 話し手=オレンジ / 聞き手=ネイビー
+  const headColor = myRole === "speaker" ? "#ee6c4d" : "#3d5a80";
+  const headDark = myRole === "speaker" ? "#d4553a" : "#2c4460";
+
+  // からだ(頭の動きに少しだけ追従)
+  ctx.fillStyle = headDark;
+  ctx.beginPath();
+  ctx.ellipse(W / 2 + faceCur.x * 0.4, H - 16, 92, 58, 0, Math.PI, 2 * Math.PI);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(W / 2 + faceCur.x, H / 2 + 10 + faceCur.y);
+  ctx.rotate(faceCur.roll * 0.7);
+
+  // 頭
+  ctx.fillStyle = headColor;
+  ctx.beginPath();
+  ctx.arc(0, 0, 96, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 頭の上の葉っぱ(「聴く力を育てる」モチーフ)
+  ctx.strokeStyle = "#588157";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(0, -94);
+  ctx.quadraticCurveTo(4, -110, 2, -118);
+  ctx.stroke();
+  ctx.fillStyle = "#588157";
+  ctx.beginPath();
+  ctx.ellipse(10, -122, 14, 8, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 顔のパネル(うっすら明るく)
+  ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
+  ctx.beginPath();
+  ctx.ellipse(0, 16, 66, 58, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ほっぺ
+  ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
+  for (const sx of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(sx * 56, 22, 13, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 目とまゆ
+  for (const [sx, blink] of [[-1, faceCur.blinkL], [1, faceCur.blinkR]]) {
+    const ex = sx * 36, ey = -12;
+    if (blink > 0.6) {
+      // 閉じ目は弧で描く
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 12, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.ellipse(ex, ey, 13, 13 * (1 - blink * 0.7), 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#27313f";
+      ctx.beginPath();
+      ctx.arc(ex, ey + 1, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // まゆ(驚くと上がり、ひそめると下がる)
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(ex - 12, ey - 24 - faceCur.brow * 10);
+    ctx.quadraticCurveTo(ex, ey - 30 - faceCur.brow * 12, ex + 12, ey - 24 - faceCur.brow * 10);
+    ctx.stroke();
+  }
+
+  // 口(開閉と笑顔に追従)
+  const mw = 34 + faceCur.smile * 16;
+  const open = 3 + faceCur.jaw * 32;
+  ctx.fillStyle = "#27313f";
+  ctx.beginPath();
+  ctx.moveTo(-mw / 2, 38 - faceCur.smile * 6);
+  ctx.quadraticCurveTo(0, 38 - faceCur.smile * 16, mw / 2, 38 - faceCur.smile * 6);
+  ctx.quadraticCurveTo(0, 38 + open, -mw / 2, 38 - faceCur.smile * 6);
+  ctx.fill();
+
+  ctx.restore();
+}
 
 // ---- WebRTC通話 -----------------------------------------------------------------
 async function startCall() {
@@ -367,10 +591,20 @@ function endCallToSurvey(sendLeave) {
 
 function cleanupCall(clearRoom = true) {
   if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
+  if (avatarLoop) { cancelAnimationFrame(avatarLoop); avatarLoop = null; }
   if (pc) { pc.close(); pc = null; }
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
+  }
+  if (rawStream) {
+    rawStream.getTracks().forEach((t) => t.stop());
+    rawStream = null;
+  }
+  if (audioCtxRef) {
+    audioCtxRef.close().catch(() => {});
+    audioCtxRef = null;
+    audioAnalyser = null;
   }
   $("remote-video").srcObject = null;
   $("local-video").srcObject = null;
