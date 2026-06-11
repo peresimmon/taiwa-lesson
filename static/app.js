@@ -13,6 +13,8 @@ let localStream = null;
 let currentRoomId = "";
 let isInitiator = false;
 let pendingCandidates = []; // remoteDescription設定前に届いたICE候補
+let sessionTimer = null;
+let sessionSeconds = 600; // 10分 = 600秒
 
 const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -249,7 +251,8 @@ async function startCall() {
   };
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === "connected") {
-      $("call-status").textContent = "通話中";
+      $("call-status").textContent = "対話中";
+      startSessionTimer();
     } else if (["failed", "disconnected"].includes(pc.connectionState)) {
       $("call-status").textContent = "接続が不安定です…";
     }
@@ -289,6 +292,24 @@ async function flushPendingCandidates() {
   pendingCandidates = [];
 }
 
+function startSessionTimer() {
+  sessionSeconds = 600;
+  updateTimerDisplay();
+  sessionTimer = setInterval(() => {
+    sessionSeconds--;
+    updateTimerDisplay();
+    if (sessionSeconds <= 0) {
+      endCallToSurvey(true);
+    }
+  }, 1000);
+}
+
+function updateTimerDisplay() {
+  const m = Math.floor(Math.max(0, sessionSeconds) / 60);
+  const s = Math.max(0, sessionSeconds) % 60;
+  $("timer-display").textContent = `${m}:${String(s).padStart(2, "0")}`;
+}
+
 $("btn-end-call").onclick = () => endCallToSurvey(true);
 
 function endCallToSurvey(sendLeave) {
@@ -303,6 +324,7 @@ function endCallToSurvey(sendLeave) {
 }
 
 function cleanupCall(clearRoom = true) {
+  if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
   if (pc) { pc.close(); pc = null; }
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());

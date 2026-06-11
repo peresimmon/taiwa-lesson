@@ -1,14 +1,20 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --primary: #4f6ef7;
-  --primary-dark: #3b55d9;
-  --danger: #e5484d;
-  --bg: #f0f2f8;
+  --primary: #3d5a80;
+  --primary-dark: #2c4460;
+  --primary-light: #e8edf4;
+  --accent: #ee6c4d;
+  --accent-dark: #d4553a;
+  --warm: #f8f0e5;
+  --warm-dark: #e8d5bf;
+  --bg: #fafaf8;
   --card: #ffffff;
-  --text: #1e2430;
-  --muted: #6b7280;
-  --border: #e2e6ef;
+  --text: #293241;
+  --muted: #6b7a8d;
+  --border: #e0ddd8;
+  --success: #588157;
+  --danger: #c1121f;
 }
 
 body {
@@ -23,17 +29,17 @@ header {
   justify-content: space-between;
   align-items: center;
   padding: 14px 24px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
+  background: var(--primary);
+  color: #fff;
 }
+header h1 { font-size: 1.15rem; font-weight: 600; letter-spacing: 0.5px; }
+header h1 small { font-size: 0.7rem; font-weight: 400; opacity: 0.8; margin-left: 8px; letter-spacing: 1px; }
 
-header h1 { font-size: 1.2rem; color: var(--primary); }
-
-#user-info { display: flex; align-items: center; gap: 12px; font-size: 0.9rem; }
+#user-info { display: flex; align-items: center; gap: 12px; font-size: 0.88rem; color: rgba(255,255,255,0.9); }
 
 main {
   max-width: 1100px;
-  margin: 32px auto;
+  margin: 28px auto;
   padding: 0 16px;
 }
 
@@ -41,52 +47,56 @@ main {
 
 .card {
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 32px;
-  box-shadow: 0 4px 16px rgba(30, 40, 80, 0.08);
-  max-width: 680px;
+  box-shadow: 0 2px 12px rgba(41, 50, 65, 0.07);
+  max-width: 620px;
   margin: 0 auto;
 }
 
 #screen-call { max-width: 880px; margin: 0 auto; }
 
-.screen h2 { margin-bottom: 14px; }
-.screen p { margin-bottom: 12px; line-height: 1.7; }
+.screen h2 { margin-bottom: 14px; color: var(--primary); }
+.screen p { margin-bottom: 12px; line-height: 1.8; }
 
 .note { color: var(--muted); font-size: 0.88rem; }
 .error { color: var(--danger); font-size: 0.9rem; min-height: 1.2em; margin-top: 10px; }
 
 /* タブ */
-.tabs { display: flex; gap: 6px; margin-bottom: 24px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 24px; background: var(--primary-light); border-radius: 10px; padding: 4px; }
 .tab {
   flex: 1; padding: 10px; border: none; border-radius: 8px;
-  background: var(--bg); color: var(--muted); font-size: 1rem; cursor: pointer;
+  background: transparent; color: var(--muted); font-size: 0.95rem; cursor: pointer;
+  transition: all 0.2s;
 }
-.tab.active { background: var(--primary); color: #fff; }
+.tab.active { background: var(--primary); color: #fff; font-weight: 600; }
 
 /* フォーム */
-form label { display: block; margin-bottom: 16px; font-size: 0.92rem; color: var(--muted); }
+form label { display: block; margin-bottom: 16px; font-size: 0.9rem; color: var(--muted); font-weight: 500; }
 form input[type="text"], form input[type="password"], form textarea {
-  display: block; width: 100%; margin-top: 6px; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: 8px; font-size: 1rem;
-  font-family: inherit;
+  display: block; width: 100%; margin-top: 6px; padding: 11px 14px;
+  border: 1.5px solid var(--border); border-radius: 10px; font-size: 1rem;
+  font-family: inherit; background: var(--bg); transition: border-color 0.2s;
 }
-form input:focus, form textarea:focus { outline: 2px solid var(--primary); border-color: transparent; }
+form input:focus, form textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(61,90,128,0.12); }
 
 .checkbox-label { display: flex; align-items: center; gap: 8px; color: var(--text); }
-.checkbox-label input { width: 18px; height: 18px; }
+.checkbox-label input { width: 18px; height: 18px; accent-color: var(--primary); }
 
 /* ボタン */
 button { font-family: inherit; }
 .btn-primary, .btn-secondary, .btn-danger {
-  padding: 12px 28px; border: none; border-radius: 10px;
-  font-size: 1rem; font-weight: 600; cursor: pointer; transition: opacity 0.15s;
+  padding: 13px 28px; border: none; border-radius: 12px;
+  font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
 }
-.btn-primary { background: var(--primary); color: #fff; width: 100%; }
-.btn-primary:hover { background: var(--primary-dark); }
-.btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+.btn-primary { background: var(--accent); color: #fff; width: 100%; }
+.btn-primary:hover { background: var(--accent-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(238,108,77,0.3); }
+.btn-secondary { background: var(--warm); color: var(--text); border: 1.5px solid var(--warm-dark); }
+.btn-secondary:hover { background: var(--warm-dark); }
 .btn-danger { background: var(--danger); color: #fff; }
-.btn-text { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 0.9rem; }
+.btn-danger:hover { opacity: 0.9; }
+.btn-text { background: none; border: none; color: rgba(255,255,255,0.85); cursor: pointer; font-size: 0.88rem; text-decoration: underline; text-underline-offset: 2px; }
+.btn-text:hover { color: #fff; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-row { display: flex; gap: 12px; margin-top: 18px; }
@@ -95,37 +105,45 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 待機スピナー */
 .spinner {
-  width: 48px; height: 48px; margin: 0 auto 20px;
-  border: 5px solid var(--border); border-top-color: var(--primary);
-  border-radius: 50%; animation: spin 0.9s linear infinite;
+  width: 52px; height: 52px; margin: 0 auto 20px;
+  border: 4px solid var(--warm-dark); border-top-color: var(--primary);
+  border-radius: 50%; animation: spin 1s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 #screen-waiting { text-align: center; }
-#screen-waiting .btn-secondary { margin-top: 10px; }
+#screen-waiting h2 { color: var(--primary); }
+#screen-waiting .btn-secondary { margin-top: 14px; }
 
-/* 同意画面 */
+/* 同意画面 → 対話のルール */
 .consent-box {
-  background: #fff8e6; border: 1px solid #f0d890;
-  border-radius: 10px; padding: 18px 22px; margin: 16px 0;
+  background: var(--warm); border: 1.5px solid var(--warm-dark);
+  border-radius: 12px; padding: 20px 24px; margin: 16px 0;
 }
-.consent-box h3 { margin-bottom: 10px; font-size: 1rem; }
-.consent-box ul { padding-left: 20px; line-height: 1.9; font-size: 0.93rem; }
+.consent-box h3 { margin-bottom: 10px; font-size: 1rem; color: var(--primary); }
+.consent-box ul { padding-left: 20px; line-height: 2; font-size: 0.92rem; color: var(--text); }
 
-/* 通話画面 */
+/* 通話(セッション)画面 */
+.session-timer {
+  text-align: center; margin-bottom: 12px;
+  font-size: 1.8rem; font-weight: 700; color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+.session-timer small { font-size: 0.8rem; font-weight: 400; color: var(--muted); display: block; }
 .video-area {
-  position: relative; background: #14181f; border-radius: 14px;
+  position: relative; background: var(--text); border-radius: 16px;
   overflow: hidden; aspect-ratio: 16 / 10;
 }
 #remote-video { width: 100%; height: 100%; object-fit: cover; }
 #local-video {
   position: absolute; right: 14px; bottom: 14px;
-  width: 26%; max-width: 200px; border-radius: 10px;
-  border: 2px solid rgba(255, 255, 255, 0.6); background: #000;
+  width: 24%; max-width: 180px; border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.5); background: #000;
 }
 .call-status {
   position: absolute; top: 12px; left: 14px;
-  background: rgba(0, 0, 0, 0.55); color: #fff;
-  padding: 6px 14px; border-radius: 999px; font-size: 0.85rem;
+  background: rgba(41, 50, 65, 0.7); color: #fff;
+  padding: 6px 14px; border-radius: 999px; font-size: 0.82rem;
+  backdrop-filter: blur(4px);
 }
 
 /* 星評価 */
@@ -134,28 +152,28 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   gap: 4px; margin: 6px 0 18px;
 }
 .stars input { display: none; }
-.stars label {
-  font-size: 2.2rem; color: #d4d8e3; cursor: pointer; margin: 0;
-}
+.stars label { font-size: 2.2rem; color: var(--border); cursor: pointer; margin: 0; transition: color 0.15s; }
 .stars input:checked ~ label, .stars label:hover, .stars label:hover ~ label {
-  color: #f5b301;
+  color: var(--accent);
 }
 
 #screen-done { text-align: center; }
-#screen-done .btn-primary { width: auto; margin-top: 10px; }
+#screen-done h2 { color: var(--success); }
+#screen-done .btn-primary { width: auto; margin-top: 14px; }
 
 /* ===== ダッシュボード ===== */
 .panel {
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 22px 24px;
-  box-shadow: 0 4px 16px rgba(30, 40, 80, 0.08);
+  box-shadow: 0 2px 12px rgba(41, 50, 65, 0.07);
 }
 .panel h3 {
-  font-size: 1.02rem;
+  font-size: 1rem;
   margin-bottom: 14px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1.5px solid var(--border);
+  color: var(--primary);
 }
 
 .hero {
@@ -166,21 +184,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-bottom: 20px;
   flex-wrap: wrap;
 }
-.hero-left h2 { margin-bottom: 8px; }
+.hero-left h2 { margin-bottom: 6px; font-size: 1.2rem; }
+.hero-left .tagline { font-size: 0.92rem; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
 .hero-left .note { margin-bottom: 4px; }
 .hero-right { display: flex; flex-direction: column; gap: 14px; min-width: 280px; }
-.hero-right .btn-primary { width: 100%; }
+.hero-right .btn-primary { width: 100%; font-size: 1.05rem; padding: 15px 28px; }
 
 .stats { display: flex; gap: 10px; }
 .stat {
   flex: 1;
-  background: var(--bg);
-  border-radius: 10px;
-  padding: 10px 8px;
+  background: var(--primary-light);
+  border-radius: 12px;
+  padding: 12px 8px;
   text-align: center;
 }
 .stat span { display: block; font-size: 1.5rem; font-weight: 700; color: var(--primary); }
-.stat small { color: var(--muted); font-size: 0.75rem; }
+.stat small { color: var(--muted); font-size: 0.73rem; }
 
 .dash-grid {
   display: grid;
@@ -193,16 +212,17 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .announcement-list { list-style: none; }
 .announcement-list li { padding: 10px 0; border-bottom: 1px dashed var(--border); }
 .announcement-list li:last-child { border-bottom: none; }
-.announcement-list .a-title { font-weight: 600; font-size: 0.95rem; }
-.announcement-list .a-body { font-size: 0.88rem; color: var(--muted); margin-top: 4px; line-height: 1.6; }
-.announcement-list .a-date { font-size: 0.75rem; color: var(--muted); }
+.announcement-list .a-title { font-weight: 600; font-size: 0.95rem; color: var(--primary-dark); }
+.announcement-list .a-body { font-size: 0.86rem; color: var(--muted); margin-top: 4px; line-height: 1.7; }
+.announcement-list .a-date { font-size: 0.73rem; color: var(--muted); margin-top: 2px; }
 
 /* カレンダー */
 .cal-header {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 8px;
 }
-.cal-header .btn-text { font-size: 1rem; padding: 4px 10px; }
+.cal-header .btn-text { font-size: 1rem; padding: 4px 10px; color: var(--primary); text-decoration: none; }
+.cal-header .btn-text:hover { color: var(--primary-dark); }
 .calendar {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -216,13 +236,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 7px 0;
   border-radius: 8px;
   cursor: pointer;
+  transition: background 0.15s;
 }
-.calendar .day:hover { background: var(--bg); }
+.calendar .day:hover { background: var(--primary-light); }
 .calendar .day.today { background: var(--primary); color: #fff; font-weight: 700; }
 .calendar .day.has-event::after {
   content: "";
   position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
-  width: 5px; height: 5px; border-radius: 50%; background: #f5a623;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
 }
 .calendar .day.today.has-event::after { background: #fff; }
 
@@ -232,22 +253,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 6px 0; font-size: 0.88rem; border-bottom: 1px dashed var(--border);
 }
 .event-list li:last-child { border-bottom: none; }
-.event-list .e-date { color: var(--primary); font-weight: 600; white-space: nowrap; }
+.event-list .e-date { color: var(--accent); font-weight: 600; white-space: nowrap; }
 .event-list .e-user { color: var(--muted); font-size: 0.75rem; margin-left: auto; white-space: nowrap; }
 
-/* インラインフォーム(イベント追加・掲示板投稿) */
+/* インラインフォーム */
 .inline-form { display: flex; gap: 8px; margin-top: 12px; }
 .inline-form input {
   flex: 1; min-width: 0; padding: 8px 10px;
-  border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem;
-  font-family: inherit;
+  border: 1.5px solid var(--border); border-radius: 8px; font-size: 0.9rem;
+  font-family: inherit; background: var(--bg);
 }
 .inline-form input[type="date"] { flex: 0 0 auto; width: 140px; }
-.inline-form input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+.inline-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(61,90,128,0.12); }
 .btn-small {
   padding: 8px 16px; border: none; border-radius: 8px;
   background: var(--primary); color: #fff; font-weight: 600; cursor: pointer;
-  white-space: nowrap;
+  white-space: nowrap; transition: background 0.2s;
 }
 .btn-small:hover { background: var(--primary-dark); }
 
@@ -257,24 +278,25 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .post-list li:last-child { border-bottom: none; }
 .post-list .p-meta { font-size: 0.75rem; color: var(--muted); margin-bottom: 2px; }
 .post-list .p-meta strong { color: var(--primary); font-size: 0.82rem; }
-.post-list .p-body { font-size: 0.92rem; line-height: 1.6; word-break: break-word; }
+.post-list .p-body { font-size: 0.92rem; line-height: 1.7; word-break: break-word; }
 
-/* 通話履歴 */
+/* セッション履歴 */
 .history-list { list-style: none; }
 .history-list li {
   display: flex; gap: 10px; align-items: baseline;
   padding: 8px 0; font-size: 0.88rem; border-bottom: 1px dashed var(--border);
 }
 .history-list li:last-child { border-bottom: none; }
-.history-list .h-stars { color: #f5b301; letter-spacing: 1px; white-space: nowrap; }
+.history-list .h-stars { color: var(--accent); letter-spacing: 1px; white-space: nowrap; }
 .history-list .h-comment { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-list .h-date { color: var(--muted); font-size: 0.75rem; margin-left: auto; white-space: nowrap; }
 
 .empty-note { color: var(--muted); font-size: 0.85rem; padding: 8px 0; }
 
 @media (max-width: 560px) {
-  .card { padding: 22px; }
-  main { margin-top: 16px; }
+  .card { padding: 22px 18px; }
+  main { margin-top: 14px; }
   .hero { flex-direction: column; align-items: stretch; }
   .hero-right { min-width: 0; }
+  .session-timer { font-size: 1.4rem; }
 }
