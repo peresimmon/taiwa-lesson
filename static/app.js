@@ -306,6 +306,7 @@ function loadFaceLandmarker() {
         runningMode: "VIDEO",
         numFaces: 1,
         outputFaceBlendshapes: true,
+        outputFacialTransformationMatrixes: true, // 頭の姿勢(うなずき角度)用
       });
       return faceLandmarker;
     })().catch((err) => {
@@ -385,12 +386,14 @@ function updateFaceFromResult(res) {
   faceTgt.roll = -Math.atan2(eyeR.y - eyeL.y, eyeR.x - eyeL.x);
   faceTgt.x = (0.5 - nose.x) * 160;
   faceTgt.y = (nose.y - 0.5) * 120;
-  // うなずき(縦の首振り): 目の中心線から鼻先までの距離は、下を向くと長く・
-  // 上を向くと短く見える。目幅で正規化して頭の上下の傾きを推定する
-  const cy = (eyeL.y + eyeR.y) / 2;
-  const eyeDist = Math.hypot(eyeR.x - eyeL.x, eyeR.y - eyeL.y);
-  if (eyeDist > 0.01) {
-    faceTgt.pitch = Math.max(-1, Math.min(1, ((nose.y - cy) / eyeDist - 0.62) * 3.2));
+  // うなずき(縦の首振り): 顔姿勢行列から頭の上下の傾きを直接取る。
+  // 行列は列優先で、第3列(data[8..10])が顔の前方ベクトル。
+  // 下を向くとy成分(data[9])が負になる → pitch正=下向き
+  const mtx = res.facialTransformationMatrixes && res.facialTransformationMatrixes[0];
+  if (mtx && mtx.data) {
+    const d = mtx.data;
+    const pitchRad = Math.atan2(-d[9], d[10]);
+    faceTgt.pitch = Math.max(-1, Math.min(1, pitchRad / 0.5)); // ±約30度で振り切り
   }
   const bs = {};
   if (res.faceBlendshapes && res.faceBlendshapes[0]) {
