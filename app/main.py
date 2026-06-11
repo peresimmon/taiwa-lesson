@@ -18,6 +18,7 @@ from .database import (
     Event,
     Post,
     SessionLocal,
+    Setting,
     Survey,
     User,
     get_db,
@@ -38,10 +39,41 @@ app.add_middleware(
 init_db()
 
 
+# --- サイト設定 ----------------------------------------------------------------
+
+DEFAULT_SETTINGS = {
+    "session_minutes": "10",     # 対話セッションの長さ(分)
+    "allow_registration": "true",  # 新規ユーザー登録を受け付けるか
+}
+
+
+def get_setting(db: Session, key: str) -> str:
+    row = db.get(Setting, key)
+    return row.value if row else DEFAULT_SETTINGS.get(key, "")
+
+
+def set_setting(db: Session, key: str, value: str) -> None:
+    row = db.get(Setting, key)
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value))
+
+
 def seed_demo_data() -> None:
-    """お知らせが空ならデモ用の初期データを投入する"""
+    """管理者アカウントと、お知らせが空ならデモ用の初期データを投入する"""
     db = SessionLocal()
     try:
+        # 起動直後から使える管理者アカウント(本番ではパスワードを必ず変更すること)
+        if not db.query(User).filter(User.username == "administrator").first():
+            db.add(
+                User(
+                    username="administrator",
+                    password_hash=hash_password("password"),
+                    role="admin",
+                )
+            )
+            db.commit()
         if db.query(Announcement).count() == 0:
             db.add_all(
                 [
@@ -76,6 +108,7 @@ class AuthIn(BaseModel):
 class TokenOut(BaseModel):
     token: str
     username: str
+    role: str = "user"
 
 
 class SurveyIn(BaseModel):
@@ -94,6 +127,16 @@ class PostIn(BaseModel):
     body: str = Field(min_length=1, max_length=1000)
 
 
+class AnnouncementIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class SettingsIn(BaseModel):
+    session_minutes: int = Field(ge=1, le=60)
+    allow_registration: bool
+
+
 # --- 認証 ---------------------------------------------------------------------
 
 
@@ -110,15 +153,23 @@ def current_user(
     return user
 
 
+def admin_user(user: User = Depends(current_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="管理者権限が必要です")
+    return user
+
+
 @app.post("/api/register", response_model=TokenOut, status_code=201)
 def register(body: AuthIn, db: Session = Depends(get_db)):
+    if get_setting(db, "allow_registration") != "true":
+        raise HTTPException(status_code=403, detail="現在、新規登録は受け付けていません")
     if db.query(User).filter(User.username == body.username).first():
         raise HTTPException(status_code=409, detail="このユーザー名は既に使われています")
     user = User(username=body.username, password_hash=hash_password(body.password))
     db.add(user)
     db.commit()
     db.refresh(user)
-    return TokenOut(token=create_token(user.id), username=user.username)
+    return TokenOut(token=create_token(user.id), username=user.username, role=user.role)
 
 
 @app.post("/api/login", response_model=TokenOut)
@@ -126,12 +177,18 @@ def login(body: AuthIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == body.username).first()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="ユーザー名またはパスワードが違います")
-    return TokenOut(token=create_token(user.id), username=user.username)
+    return TokenOut(token=create_token(user.id), username=user.username, role=user.role)
 
 
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
-    return {"id": user.id, "username": user.username}
+    return {"id": user.id, "username": user.username, "role": user.role}
+
+
+@app.get("/api/config")
+def app_config(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """ログインユーザー向けのサイト設定(セッション時間など)"""
+    return {"session_minutes": int(get_setting(db, "session_minutes"))}
 
 
 # --- アンケート ----------------------------------------------------------------
@@ -274,6 +331,128 @@ def stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "waiting_speakers": counts["speakers"],
         "waiting_listeners": counts["listeners"],
     }
+
+
+# --- 管理者API ------------------------------------------------------------------
+
+
+@app.get("/api/admin/users")
+def admin_list_users(admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    """登録ユーザー一覧(セッション数つき)"""
+    from sqlalchemy import func
+
+    counts = dict(
+        db.query(Survey.user_id, func.count(Survey.id)).group_by(Survey.user_id).all()
+    )
+    rows = db.query(User).order_by(User.id).all()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "created_at": u.created_at.isoformat(),
+            "session_count": counts.get(u.id, 0),
+        }
+        for u in rows
+    ]
+
+
+@app.get("/api/admin/users/{user_id}/surveys")
+def admin_user_surveys(
+    user_id: int,
+    admin: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    """指定ユーザーの通話(セッション)履歴"""
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    rows = (
+        db.query(Survey)
+        .filter(Survey.user_id == user_id)
+        .order_by(Survey.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return {
+        "username": target.username,
+        "surveys": [
+            {
+                "room_id": s.room_id,
+                "rating": s.rating,
+                "talk_again": s.talk_again,
+                "comment": s.comment,
+                "created_at": s.created_at.isoformat(),
+            }
+            for s in rows
+        ],
+    }
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(
+    user_id: int,
+    admin: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    """ユーザーと関連データを削除(管理者は削除不可)"""
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    if target.role == "admin":
+        raise HTTPException(status_code=400, detail="管理者ユーザーは削除できません")
+    db.query(Survey).filter(Survey.user_id == user_id).delete()
+    db.query(Event).filter(Event.user_id == user_id).delete()
+    db.query(Post).filter(Post.user_id == user_id).delete()
+    db.delete(target)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/admin/settings")
+def admin_get_settings(admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    return {
+        "session_minutes": int(get_setting(db, "session_minutes")),
+        "allow_registration": get_setting(db, "allow_registration") == "true",
+    }
+
+
+@app.put("/api/admin/settings")
+def admin_put_settings(
+    body: SettingsIn,
+    admin: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    set_setting(db, "session_minutes", str(body.session_minutes))
+    set_setting(db, "allow_registration", "true" if body.allow_registration else "false")
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/admin/announcements", status_code=201)
+def admin_create_announcement(
+    body: AnnouncementIn,
+    admin: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    ann = Announcement(title=body.title, body=body.body)
+    db.add(ann)
+    db.commit()
+    return {"ok": True, "id": ann.id}
+
+
+@app.delete("/api/admin/announcements/{ann_id}")
+def admin_delete_announcement(
+    ann_id: int,
+    admin: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    ann = db.get(Announcement, ann_id)
+    if ann is None:
+        raise HTTPException(status_code=404, detail="お知らせが存在しません")
+    db.delete(ann)
+    db.commit()
+    return {"ok": True}
 
 
 # --- WebSocket(マッチング+シグナリング) -------------------------------------

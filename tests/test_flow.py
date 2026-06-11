@@ -242,6 +242,73 @@ def test_dashboard(users):
           and "waiting_speakers" in s and "waiting_listeners" in s, r.text)
 
 
+def test_admin(users):
+    print("[8] 管理者API")
+    user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
+
+    # 一般ユーザーは管理APIにアクセスできない
+    r = requests.get(f"{BASE}/api/admin/users", headers=user_headers)
+    check("一般ユーザーは403", r.status_code == 403, r.text)
+
+    # 起動時にシードされた管理者でログイン
+    r = requests.post(f"{BASE}/api/login", json={"username": "administrator", "password": "password"})
+    check("administratorでログイン", r.status_code == 200 and r.json().get("role") == "admin", r.text)
+    headers = {"Authorization": f"Bearer {r.json()['token']}"}
+
+    # ユーザー一覧
+    r = requests.get(f"{BASE}/api/admin/users", headers=headers)
+    rows = r.json()
+    check("ユーザー一覧取得", r.status_code == 200 and
+          any(u["username"] == users[0]["username"] for u in rows), r.text)
+    target = next(u for u in rows if u["username"] == users[0]["username"])
+    check("セッション数が記録される", target["session_count"] >= 1, target)
+
+    # 他ユーザーの通話履歴
+    r = requests.get(f"{BASE}/api/admin/users/{target['id']}/surveys", headers=headers)
+    data = r.json()
+    check("他ユーザーの履歴取得", r.status_code == 200 and
+          data["username"] == users[0]["username"] and len(data["surveys"]) >= 1, r.text)
+
+    # サイト設定の取得・変更
+    r = requests.get(f"{BASE}/api/admin/settings", headers=headers)
+    orig = r.json()
+    check("設定取得", r.status_code == 200 and "session_minutes" in orig, r.text)
+    r = requests.put(f"{BASE}/api/admin/settings", headers=headers,
+                     json={"session_minutes": 5, "allow_registration": False})
+    check("設定変更", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/config", headers=user_headers)
+    check("設定が/api/configに反映される", r.json()["session_minutes"] == 5, r.text)
+    r = requests.post(f"{BASE}/api/register", json={"username": "blocked_user_x", "password": "pass123"})
+    check("登録停止中は403", r.status_code == 403, r.text)
+    r = requests.put(f"{BASE}/api/admin/settings", headers=headers,
+                     json={"session_minutes": orig["session_minutes"], "allow_registration": True})
+    check("設定を元に戻す", r.status_code == 200, r.text)
+
+    # お知らせの作成・削除
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=headers,
+                      json={"title": "テストのお知らせ", "body": "本文です"})
+    check("お知らせ作成", r.status_code == 201, r.text)
+    ann_id = r.json()["id"]
+    r = requests.get(f"{BASE}/api/announcements", headers=user_headers)
+    check("お知らせが一覧に出る", any(a["id"] == ann_id for a in r.json()), r.text)
+    r = requests.delete(f"{BASE}/api/admin/announcements/{ann_id}", headers=headers)
+    check("お知らせ削除", r.status_code == 200, r.text)
+
+    # ユーザー削除(管理者は削除不可)
+    admin_row = next(u for u in rows if u["role"] == "admin")
+    r = requests.delete(f"{BASE}/api/admin/users/{admin_row['id']}", headers=headers)
+    check("管理者は削除できない", r.status_code == 400, r.text)
+    suffix = secrets.token_hex(4)
+    r = requests.post(f"{BASE}/api/register", json={"username": f"victim_{suffix}", "password": "pass123"})
+    vid_token = r.json()["token"]
+    r = requests.get(f"{BASE}/api/me", headers={"Authorization": f"Bearer {vid_token}"})
+    vid = r.json()["id"]
+    r = requests.delete(f"{BASE}/api/admin/users/{vid}", headers=headers)
+    check("一般ユーザーを削除できる", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/me", headers={"Authorization": f"Bearer {vid_token}"})
+    check("削除済みユーザーのトークンは無効", r.status_code == 401, r.text)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -250,6 +317,7 @@ async def main():
     await test_decline_flow(users)
     await test_disconnect_during_wait(users)
     test_dashboard(users)
+    test_admin(users)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 

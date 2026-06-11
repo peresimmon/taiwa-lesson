@@ -7,6 +7,8 @@ const API_BASE = ""; // 同一オリジンで配信。別ホストに置く場�
 // ---- 状態 -------------------------------------------------------------------
 let token = localStorage.getItem("vm_token") || "";
 let username = localStorage.getItem("vm_username") || "";
+let userRole = "user";       // "user" | "admin"
+let sessionMinutes = 10;     // サイト設定から取得するセッション時間(分)
 let ws = null;
 let pc = null;            // RTCPeerConnection
 let localStream = null;
@@ -56,13 +58,15 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-function setLoggedIn(newToken, newUsername) {
+function setLoggedIn(newToken, newUsername, newRole) {
   token = newToken;
   username = newUsername;
+  userRole = newRole || "user";
   localStorage.setItem("vm_token", token);
   localStorage.setItem("vm_username", username);
   $("user-name").textContent = `👤 ${username}`;
   $("user-info").classList.remove("hidden");
+  $("btn-admin").classList.toggle("hidden", userRole !== "admin");
   $("dash-username").textContent = username;
   showLobby();
 }
@@ -86,6 +90,8 @@ async function ensureWS() {
 function logout() {
   token = "";
   username = "";
+  userRole = "user";
+  $("btn-admin").classList.add("hidden");
   localStorage.removeItem("vm_token");
   localStorage.removeItem("vm_username");
   cleanupCall();
@@ -116,7 +122,7 @@ $("auth-form").onsubmit = async (e) => {
       username: $("auth-username").value.trim(),
       password: $("auth-password").value,
     });
-    setLoggedIn(data.token, data.username);
+    setLoggedIn(data.token, data.username, data.role);
   } catch (err) {
     $("auth-error").textContent = err.message;
   }
@@ -1020,7 +1026,7 @@ async function flushPendingCandidates() {
 }
 
 function startSessionTimer() {
-  sessionSeconds = 600;
+  sessionSeconds = sessionMinutes * 60; // サイト設定のセッション時間
   updateTimerDisplay();
   sessionTimer = setInterval(() => {
     sessionSeconds--;
@@ -1106,16 +1112,18 @@ let monthEvents = [];
 
 async function loadDashboard() {
   try {
-    const [announcements, posts, stats, history] = await Promise.all([
+    const [announcements, posts, stats, history, config] = await Promise.all([
       api("/api/announcements"),
       api("/api/posts"),
       api("/api/stats"),
       api("/api/surveys/mine"),
+      api("/api/config"),
     ]);
     renderAnnouncements(announcements);
     renderPosts(posts);
     renderStats(stats);
     renderHistory(history);
+    sessionMinutes = config.session_minutes || 10;
     await loadEvents();
   } catch (err) {
     $("lobby-error").textContent = err.message;
@@ -1278,6 +1286,137 @@ setInterval(async () => {
   }
 }, 15000);
 
+// ---- 管理画面(管理者のみ) -----------------------------------------------------
+$("btn-admin").onclick = () => showAdmin();
+$("btn-admin-back").onclick = () => showLobby();
+
+async function showAdmin() {
+  $("admin-error").textContent = "";
+  showScreen("admin");
+  try {
+    await Promise.all([loadAdminUsers(), loadAdminSettings(), loadAdminAnnouncements()]);
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+}
+
+async function loadAdminUsers() {
+  const users = await api("/api/admin/users");
+  $("admin-user-rows").innerHTML = users
+    .map(
+      (u) => `<tr>
+        <td>${u.id}</td>
+        <td>${escapeHtml(u.username)}</td>
+        <td>${u.role === "admin" ? '<span class="role-tag speaker">管理者</span>' : "一般"}</td>
+        <td>${parseUTC(u.created_at).toLocaleDateString("ja-JP")}</td>
+        <td>${u.session_count}</td>
+        <td class="admin-actions">
+          <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.username)}">履歴</button>
+          ${u.role === "admin" ? "" : `<button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
+        </td>
+      </tr>`
+    )
+    .join("");
+
+  $("admin-user-rows").querySelectorAll("[data-history]").forEach((btn) => {
+    btn.onclick = () => loadAdminHistory(btn.dataset.history, btn.dataset.name);
+  });
+  $("admin-user-rows").querySelectorAll("[data-delete]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm(`ユーザー「${btn.dataset.name}」と関連データを削除します。よろしいですか？`)) return;
+      try {
+        await api(`/api/admin/users/${btn.dataset.delete}`, "DELETE");
+        await loadAdminUsers();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
+  });
+}
+
+async function loadAdminHistory(userId, name) {
+  $("admin-error").textContent = "";
+  try {
+    const data = await api(`/api/admin/users/${userId}/surveys`);
+    $("admin-history-user").textContent = `: ${name}`;
+    $("admin-history-list").innerHTML = data.surveys.length
+      ? data.surveys
+          .map(
+            (s) => `<li>
+              <span class="h-stars">${"★".repeat(s.rating)}${"☆".repeat(5 - s.rating)}</span>
+              <span class="h-comment">${escapeHtml(s.comment) || "(コメントなし)"}</span>
+              <span class="h-date">${parseUTC(s.created_at).toLocaleDateString("ja-JP")}</span>
+            </li>`
+          )
+          .join("")
+      : '<li class="empty-note">このユーザーのセッション履歴はありません</li>';
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+}
+
+async function loadAdminSettings() {
+  const s = await api("/api/admin/settings");
+  $("set-minutes").value = s.session_minutes;
+  $("set-registration").checked = s.allow_registration;
+}
+
+$("admin-settings-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("admin-settings-msg").textContent = "";
+  try {
+    await api("/api/admin/settings", "PUT", {
+      session_minutes: parseInt($("set-minutes").value, 10),
+      allow_registration: $("set-registration").checked,
+    });
+    sessionMinutes = parseInt($("set-minutes").value, 10);
+    $("admin-settings-msg").textContent = "保存しました";
+  } catch (err) {
+    $("admin-settings-msg").textContent = err.message;
+  }
+};
+
+async function loadAdminAnnouncements() {
+  const items = await api("/api/announcements");
+  $("admin-announce-list").innerHTML = items.length
+    ? items
+        .map(
+          (a) => `<li>
+            <div class="a-title">${escapeHtml(a.title)}
+              <button class="btn-text danger" data-ann="${a.id}">削除</button></div>
+            <div class="a-body">${escapeHtml(a.body)}</div>
+            <div class="a-date">${parseUTC(a.created_at).toLocaleDateString("ja-JP")}</div>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">お知らせはありません</li>';
+  $("admin-announce-list").querySelectorAll("[data-ann]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/admin/announcements/${btn.dataset.ann}`, "DELETE");
+        await loadAdminAnnouncements();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
+  });
+}
+
+$("admin-announce-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/admin/announcements", "POST", {
+      title: $("ann-title").value.trim(),
+      body: $("ann-body").value.trim(),
+    });
+    $("ann-title").value = "";
+    $("ann-body").value = "";
+    await loadAdminAnnouncements();
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+};
+
 // ---- 初期化 -----------------------------------------------------------------
 (async function init() {
   if (!token) {
@@ -1286,7 +1425,7 @@ setInterval(async () => {
   }
   try {
     const me = await api("/api/me");
-    setLoggedIn(token, me.username);
+    setLoggedIn(token, me.username, me.role);
   } catch {
     logout();
   }

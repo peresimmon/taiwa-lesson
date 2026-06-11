@@ -361,6 +361,36 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .empty-note { color: var(--muted); font-size: 0.85rem; padding: 8px 0; }
 
+/* ===== 管理画面 ===== */
+.admin-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 20px;
+}
+.admin-bar h2 { margin: 0; color: var(--primary); }
+.admin-bar .btn-secondary { padding: 9px 18px; font-size: 0.9rem; }
+
+.admin-table-wrap { overflow-x: auto; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+.admin-table th {
+  text-align: left; color: var(--muted); font-size: 0.75rem; font-weight: 600;
+  padding: 6px 8px; border-bottom: 1.5px solid var(--border);
+}
+.admin-table td { padding: 7px 8px; border-bottom: 1px dashed var(--border); }
+.admin-table tr:last-child td { border-bottom: none; }
+.admin-table .role-tag { font-size: 0.68rem; padding: 2px 8px; white-space: nowrap; display: inline-block; }
+.admin-actions { white-space: nowrap; }
+.admin-actions .btn-text, .announcement-list .btn-text {
+  color: var(--primary); text-decoration: underline; font-size: 0.8rem; padding: 0 4px;
+}
+.btn-text.danger { color: var(--danger); }
+.admin-history-user { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
+
+#screen-admin form label { margin-bottom: 12px; }
+#screen-admin form input[type="number"] { width: 110px; display: block; margin-top: 6px;
+  padding: 8px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 0.95rem;
+  font-family: inherit; background: var(--bg); }
+#admin-error { margin-top: 14px; }
+
 @media (max-width: 560px) {
   .card { padding: 22px 18px; }
   main { margin-top: 14px; }

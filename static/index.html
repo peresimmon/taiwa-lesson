@@ -21,6 +21,7 @@
     <h1>対話のおけいこ<small>TAIWA NO OKEIKO</small></h1>
     <div id="user-info" class="hidden">
       <span id="user-name"></span>
+      <button id="btn-admin" class="btn-text hidden">管理画面</button>
       <button id="btn-logout" class="btn-text">ログアウト</button>
     </div>
   </header>
@@ -210,6 +211,63 @@
       <h2>振り返りを記録しました</h2>
       <p>日々の積み重ねが「聴く力」を育てます。</p>
       <button id="btn-back-lobby" class="btn-primary">ホームへ戻る</button>
+    </section>
+
+    <!-- 管理画面(管理者のみ) -->
+    <section id="screen-admin" class="screen hidden">
+      <div class="panel admin-bar">
+        <h2>管理画面</h2>
+        <button id="btn-admin-back" class="btn-secondary">ホームへ戻る</button>
+      </div>
+      <div class="dash-grid">
+        <div class="panel">
+          <h3>ユーザー一覧</h3>
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr><th>ID</th><th>ユーザー名</th><th>権限</th><th>登録日</th><th>回数</th><th></th></tr>
+              </thead>
+              <tbody id="admin-user-rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>セッション履歴<span id="admin-history-user" class="admin-history-user"></span></h3>
+          <ul id="admin-history-list" class="history-list">
+            <li class="empty-note">ユーザー一覧の「履歴」を押すと表示されます</li>
+          </ul>
+        </div>
+
+        <div class="panel">
+          <h3>サイト設定</h3>
+          <form id="admin-settings-form">
+            <label>セッション時間（分）
+              <input type="number" id="set-minutes" min="1" max="60" required>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-registration"> 新規ユーザー登録を許可する
+            </label>
+            <button type="submit" class="btn-small">設定を保存</button>
+            <p id="admin-settings-msg" class="note"></p>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h3>お知らせ管理</h3>
+          <form id="admin-announce-form">
+            <label>タイトル
+              <input type="text" id="ann-title" required maxlength="200">
+            </label>
+            <label>本文
+              <textarea id="ann-body" rows="2" required maxlength="2000"></textarea>
+            </label>
+            <button type="submit" class="btn-small">お知らせを投稿</button>
+          </form>
+          <ul id="admin-announce-list" class="announcement-list"></ul>
+        </div>
+      </div>
+      <p id="admin-error" class="error"></p>
     </section>
   </main>
 
