@@ -36,6 +36,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def cache_control(request, call_next):
+    """HTML/JS/CSSは毎回サーバーに再検証させる。
+    デプロイ後にブラウザキャッシュの古いコードが使われ続けるのを防ぐ
+    (ETagにより未変更なら304で済むため通信量はほぼ増えない)"""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith((".html", ".js", ".css")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 init_db()
 
 
