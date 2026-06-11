@@ -154,7 +154,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--card); cursor: pointer; text-align: center;
   transition: all 0.15s;
 }
-.avatar-option canvas { border-radius: 8px; display: block; }
+.avatar-option canvas, .avatar-option img { border-radius: 8px; display: block; object-fit: cover; }
 .avatar-option small { font-size: 0.72rem; color: var(--muted); }
 .avatar-option:hover { border-color: var(--primary); }
 .avatar-option.selected {

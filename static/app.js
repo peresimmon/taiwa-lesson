@@ -175,7 +175,7 @@ async function handleWSMessage(msg) {
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
       loadFaceLandmarker(); // 同意画面の間にモデルを先読みしておく
-      if (AVATARS[avatarType].mode === "real") loadVRM();
+      if (AVATARS[avatarType].mode === "real") loadVRM(avatarType);
       renderAvatarPicker();
       showScreen("consent");
       break;
@@ -285,8 +285,8 @@ let audioCtxRef = null;
 let audioAnalyser = null; // トラッキング不可時のフォールバック(声で口を動かす)
 
 // 表情の現在値と目標値。毎フレーム補間してなめらかに動かす
-const faceCur = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
-const faceTgt = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
+const faceCur = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
+const faceTgt = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
 
 function loadFaceLandmarker() {
   if (!landmarkerPromise) {
@@ -319,8 +319,8 @@ function loadFaceLandmarker() {
 
 async function buildAvatarStream() {
   avatarCanvas = document.createElement("canvas");
-  avatarCanvas.width = 480;
-  avatarCanvas.height = 360;
+  avatarCanvas.width = 512;
+  avatarCanvas.height = 320; // 表示エリアと同じ16:10(クロップによる頭の見切れを防ぐ)
   avatarCtx = avatarCanvas.getContext("2d");
 
   // トラッキング用の非表示video。画面にもネットワークにも出さない
@@ -333,7 +333,7 @@ async function buildAvatarStream() {
   await loadFaceLandmarker();
   if (!faceLandmarker) setupAudioFallback();
   if (AVATARS[avatarType].mode === "real") {
-    await loadVRM(); // 失敗してもデフォルメ表示にフォールバックして続行
+    await activateVRM(avatarType); // 失敗してもデフォルメ表示にフォールバックして続行
   }
 
   startAvatarLoop(trackVideo);
@@ -385,15 +385,23 @@ function updateFaceFromResult(res) {
   faceTgt.roll = -Math.atan2(eyeR.y - eyeL.y, eyeR.x - eyeL.x);
   faceTgt.x = (0.5 - nose.x) * 160;
   faceTgt.y = (nose.y - 0.5) * 120;
+  // うなずき(縦の首振り): 目の中心線から鼻先までの距離は、下を向くと長く・
+  // 上を向くと短く見える。目幅で正規化して頭の上下の傾きを推定する
+  const cy = (eyeL.y + eyeR.y) / 2;
+  const eyeDist = Math.hypot(eyeR.x - eyeL.x, eyeR.y - eyeL.y);
+  if (eyeDist > 0.01) {
+    faceTgt.pitch = Math.max(-1, Math.min(1, ((nose.y - cy) / eyeDist - 0.62) * 3.2));
+  }
   const bs = {};
   if (res.faceBlendshapes && res.faceBlendshapes[0]) {
     for (const c of res.faceBlendshapes[0].categories) bs[c.categoryName] = c.score;
   }
   faceTgt.blinkL = bs.eyeBlinkRight || 0; // ミラーなので左右を入れ替える
   faceTgt.blinkR = bs.eyeBlinkLeft || 0;
-  faceTgt.jaw = bs.jawOpen || 0;
-  faceTgt.smile = ((bs.mouthSmileLeft || 0) + (bs.mouthSmileRight || 0)) / 2;
-  faceTgt.brow = (bs.browInnerUp || 0) - ((bs.browDownLeft || 0) + (bs.browDownRight || 0)) / 2;
+  faceTgt.jaw = clamp01((bs.jawOpen || 0) * 1.2);
+  // 笑顔は検出スコアが低めに出るので増幅して見た目に反映されやすくする
+  faceTgt.smile = clamp01(((bs.mouthSmileLeft || 0) + (bs.mouthSmileRight || 0)) / 2 * 1.8);
+  faceTgt.brow = (bs.browInnerUp || 0) * 1.3 - ((bs.browDownLeft || 0) + (bs.browDownRight || 0)) / 2;
 }
 
 // ---- アバターの種類 -----------------------------------------------------------
@@ -404,17 +412,21 @@ const AVATARS = {
   usagi: { label: "うさぎ", mode: "toon" },
   kuma: { label: "くま", mode: "toon" },
   hito: { label: "ひと", mode: "toon" },
-  hinata: { label: "ひなた", mode: "real" },
+  hinata: { label: "ひなた", mode: "real", url: "models/avatar_real.vrm", thumb: "models/thumbs/avatar_real.jpg" },
+  tsumugi: { label: "つむぎ", mode: "real", url: "models/avatar_fem.vrm", thumb: "models/thumbs/avatar_fem.jpg" },
+  takeru: { label: "たける", mode: "real", url: "models/avatar_masc.vrm", thumb: "models/thumbs/avatar_masc.jpg" },
+  ren: { label: "れん", mode: "real", url: "models/avatar_sample_c.vrm", thumb: "models/thumbs/avatar_sample_c.jpg" },
+  seed: { label: "シード", mode: "real", url: "models/avatar_seed.vrm", thumb: "models/thumbs/avatar_seed.jpg" },
 };
 let avatarType = localStorage.getItem("vm_avatar") || "maru";
 if (!AVATARS[avatarType]) avatarType = "maru";
 
 function drawAvatar() {
   const W = avatarCanvas.width, H = avatarCanvas.height;
-  if (AVATARS[avatarType].mode === "real" && vrmState) {
+  if (AVATARS[avatarType].mode === "real" && vrmActive && vrmActive.type === avatarType) {
     updateVRMFrame();
     drawAvatarBackground(avatarCtx, W, H);
-    avatarCtx.drawImage(vrmState.canvas, 0, 0, W, H);
+    avatarCtx.drawImage(vrmCtx.canvas, 0, 0, W, H);
     return;
   }
   // デフォルメ(2D)。リアル選択中でも3Dの読み込みが終わるまでは「まる」でつなぐ
@@ -429,66 +441,98 @@ function drawAvatar() {
 }
 
 // ---- リアルモード(3D VRMアバター) ----------------------------------------------
-const VRM_MODEL_URL = "models/avatar_real.vrm";
-let vrmState = null;   // { renderer, scene, camera, vrm, clock, canvas }
-let vrmPromise = null;
+let vrmCtx = null;        // 共有のレンダラー類 { THREE, renderer, scene, camera, clock, canvas }
+let vrmCtxPromise = null;
+const vrmModels = {};     // type -> Promise<{ vrm } | null> モデルキャッシュ
+let vrmActive = null;     // { model, type } 現在シーンに載っているモデル
 
-function loadVRM() {
-  if (!vrmPromise) {
-    vrmPromise = (async () => {
+function loadVRMContext() {
+  if (!vrmCtxPromise) {
+    vrmCtxPromise = (async () => {
       const THREE = await import("three");
       const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
       const { VRMLoaderPlugin, VRMUtils } = await import("@pixiv/three-vrm");
 
       const canvas = document.createElement("canvas");
-      canvas.width = 480;
-      canvas.height = 360;
+      canvas.width = 512;
+      canvas.height = 320; // 表示エリアと同じ16:10。クロップで頭が切れないように
       const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
       renderer.setPixelRatio(1);
 
       const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(28, 480 / 360, 0.1, 20);
+      const camera = new THREE.PerspectiveCamera(28, 512 / 320, 0.1, 20);
       const keyLight = new THREE.DirectionalLight(0xffffff, Math.PI * 0.9);
       keyLight.position.set(0.5, 1.2, 1.5);
       scene.add(keyLight);
       scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.45));
 
-      const loader = new GLTFLoader();
-      loader.register((parser) => new VRMLoaderPlugin(parser));
-      const gltf = await loader.loadAsync(VRM_MODEL_URL);
-      const vrm = gltf.userData.vrm;
-      VRMUtils.rotateVRM0(vrm); // VRM0系モデルでも正面を向くように
-      scene.add(vrm.scene);
-
-      // Tポーズのままだと腕が映り込むので下ろす
-      const lArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
-      const rArm = vrm.humanoid.getNormalizedBoneNode("rightUpperArm");
-      if (lArm) lArm.rotation.z = -1.2;
-      if (rArm) rArm.rotation.z = 1.2;
-      vrm.humanoid.update();
-
-      // 顔の高さにカメラを合わせてバストアップ構図にする
-      const head = vrm.humanoid.getNormalizedBoneNode("head");
-      const headPos = new THREE.Vector3();
-      head.getWorldPosition(headPos);
-      camera.position.set(headPos.x, headPos.y + 0.04, headPos.z + 0.78);
-      camera.lookAt(headPos.x, headPos.y - 0.05, headPos.z);
-
-      vrmState = { renderer, scene, camera, vrm, clock: new THREE.Clock(), canvas };
-      return vrmState;
+      vrmCtx = { THREE, GLTFLoader, VRMLoaderPlugin, VRMUtils, renderer, scene, camera, clock: new THREE.Clock(), canvas };
+      return vrmCtx;
     })().catch((err) => {
-      console.warn("3Dアバターを読み込めませんでした。デフォルメ表示で続行します", err);
-      vrmPromise = null; // 次回再試行できるようにする
+      console.warn("3D描画を初期化できませんでした", err);
+      vrmCtxPromise = null;
       return null;
     });
   }
-  return vrmPromise;
+  return vrmCtxPromise;
+}
+
+function loadVRM(type) {
+  const def = AVATARS[type];
+  if (!def || def.mode !== "real") return Promise.resolve(null);
+  if (!vrmModels[type]) {
+    vrmModels[type] = (async () => {
+      const c = await loadVRMContext();
+      if (!c) return null;
+      const loader = new c.GLTFLoader();
+      loader.register((parser) => new c.VRMLoaderPlugin(parser));
+      const gltf = await loader.loadAsync(def.url);
+      const vrm = gltf.userData.vrm;
+      c.VRMUtils.rotateVRM0(vrm); // VRM0系モデルでも正面を向くように
+
+      // Tポーズのままだと腕が映り込むので下ろす(VRM0と1で回転方向が逆)
+      const armZ = vrm.meta && vrm.meta.metaVersion === "0" ? 1.2 : -1.2;
+      const lArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
+      const rArm = vrm.humanoid.getNormalizedBoneNode("rightUpperArm");
+      if (lArm) lArm.rotation.z = armZ;
+      if (rArm) rArm.rotation.z = -armZ;
+      vrm.humanoid.update();
+      return { vrm };
+    })().catch((err) => {
+      console.warn(`3Dアバター(${def.label})を読み込めませんでした`, err);
+      delete vrmModels[type]; // 次回再試行できるようにする
+      return null;
+    });
+  }
+  return vrmModels[type];
+}
+
+/* 指定モデルをシーンに載せ、顔全体が入る構図にカメラを合わせる */
+async function activateVRM(type) {
+  const model = await loadVRM(type);
+  if (!model || !vrmCtx) {
+    vrmActive = null;
+    return null;
+  }
+  if (vrmActive && vrmActive.model !== model) vrmCtx.scene.remove(vrmActive.model.vrm.scene);
+  if (!vrmActive || vrmActive.model !== model) vrmCtx.scene.add(model.vrm.scene);
+  vrmActive = { model, type };
+
+  vrmCtx.scene.updateMatrixWorld(true);
+  const head = model.vrm.humanoid.getNormalizedBoneNode("head");
+  const p = new vrmCtx.THREE.Vector3();
+  head.getWorldPosition(p);
+  // 頭のボーンより上に髪などがあるため、十分に引いて頭全体+肩を収める
+  vrmCtx.camera.position.set(p.x, p.y + 0.02, p.z + 0.95);
+  vrmCtx.camera.lookAt(p.x, p.y - 0.01, p.z);
+  return vrmActive;
 }
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 function updateVRMFrame() {
-  const { renderer, scene, camera, vrm, clock } = vrmState;
+  const { renderer, scene, camera, clock } = vrmCtx;
+  const vrm = vrmActive.model.vrm;
   const em = vrm.expressionManager;
   if (em) {
     // VRMのblinkLeftはアバター自身の左目=画面右側。2D側とは左右が逆になる
@@ -501,7 +545,7 @@ function updateVRMFrame() {
   const head = vrm.humanoid.getNormalizedBoneNode("head");
   if (head) {
     head.rotation.set(
-      -faceCur.y / 120 * 0.5,      // うなずき
+      faceCur.pitch * 0.5,         // うなずき(下を向くと+)
       faceCur.x / 160 * 0.6,       // 左右の向き
       faceCur.roll * 0.6           // 首かしげ
     );
@@ -518,12 +562,13 @@ function drawAvatarBackground(ctx, W, H) {
   ctx.fillRect(0, 0, W, H);
 }
 
-/* ほっぺ */
-function drawCheeks(ctx, color, y = 22) {
+/* ほっぺ(笑顔で少し上がって大きくなる) */
+function drawCheeks(ctx, color, y = 22, f = null) {
+  const smile = f ? f.smile : 0;
   ctx.fillStyle = color;
   for (const sx of [-1, 1]) {
     ctx.beginPath();
-    ctx.ellipse(sx * 56, y, 13, 9, 0, 0, Math.PI * 2);
+    ctx.ellipse(sx * 56, y - smile * 5, 13 + smile * 4, 9 + smile * 2, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -532,7 +577,14 @@ function drawCheeks(ctx, color, y = 22) {
 function drawFaceParts(ctx, f, p) {
   for (const [sx, blink] of [[-1, f.blinkL], [1, f.blinkR]]) {
     const ex = sx * 36, ey = p.eyeY;
-    if (blink > 0.6) {
+    if (f.smile > 0.6 && blink < 0.6) {
+      // にっこり目(上向きの弧)
+      ctx.strokeStyle = p.closedColor;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(ex, ey + 5, 11, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.stroke();
+    } else if (blink > 0.6) {
       // 閉じ目は弧で描く
       ctx.strokeStyle = p.closedColor;
       ctx.lineWidth = 4;
@@ -540,10 +592,11 @@ function drawFaceParts(ctx, f, p) {
       ctx.arc(ex, ey, 12, 0.15 * Math.PI, 0.85 * Math.PI);
       ctx.stroke();
     } else if (p.eyeStyle === "sclera") {
-      // 白目+瞳
+      // 白目+瞳(笑顔で少し細くなる)
+      const squint = (1 - blink * 0.7) * (1 - f.smile * 0.25);
       ctx.fillStyle = p.eyeColor;
       ctx.beginPath();
-      ctx.ellipse(ex, ey, 13, 13 * (1 - blink * 0.7), 0, 0, Math.PI * 2);
+      ctx.ellipse(ex, ey, 13, 13 * squint, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = p.pupilColor;
       ctx.beginPath();
@@ -551,9 +604,10 @@ function drawFaceParts(ctx, f, p) {
       ctx.fill();
     } else {
       // 黒目だけ(動物向け)
+      const squint = (1 - blink * 0.7) * (1 - f.smile * 0.25);
       ctx.fillStyle = p.pupilColor;
       ctx.beginPath();
-      ctx.ellipse(ex, ey, 9, 10 * (1 - blink * 0.7), 0, 0, Math.PI * 2);
+      ctx.ellipse(ex, ey, 9, 10 * squint, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
       ctx.beginPath();
@@ -568,15 +622,15 @@ function drawFaceParts(ctx, f, p) {
     ctx.quadraticCurveTo(ex, ey - 30 - f.brow * 12, ex + 12, ey - 24 - f.brow * 10);
     ctx.stroke();
   }
-  // 口(開閉と笑顔に追従)
-  const mw = (p.mouthW || 34) + f.smile * 16;
+  // 口(開閉と笑顔に追従。笑顔は口角を大きく上げて分かりやすく)
+  const mw = (p.mouthW || 34) + f.smile * 22;
   const open = 3 + f.jaw * (p.openScale || 32);
   const my = p.mouthY;
   ctx.fillStyle = p.mouthColor;
   ctx.beginPath();
-  ctx.moveTo(-mw / 2, my - f.smile * 6);
-  ctx.quadraticCurveTo(0, my - f.smile * 16, mw / 2, my - f.smile * 6);
-  ctx.quadraticCurveTo(0, my + open, -mw / 2, my - f.smile * 6);
+  ctx.moveTo(-mw / 2, my - f.smile * 10);
+  ctx.quadraticCurveTo(0, my - f.smile * 22 + 4, mw / 2, my - f.smile * 10);
+  ctx.quadraticCurveTo(0, my + open, -mw / 2, my - f.smile * 10);
   ctx.fill();
 }
 
@@ -593,8 +647,11 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
   const roleMain = role === "speaker" ? "#ee6c4d" : "#3d5a80";
   const roleDark = role === "speaker" ? "#d4553a" : "#2c4460";
 
+  // 等倍スケールで中央寄せ(縦横比が変わっても歪まない)
+  const sc = Math.min(W / 480, H / 360);
   ctx.save();
-  ctx.scale(W / 480, H / 360); // 以降は480x360の座標系で描く
+  ctx.translate((W - 480 * sc) / 2, (H - 360 * sc) / 2);
+  ctx.scale(sc, sc); // 以降は480x360の座標系で描く
 
   // からだ(頭の動きに少しだけ追従)
   const bodyX = 240 + f.x * 0.4;
@@ -622,6 +679,8 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
   ctx.save();
   ctx.translate(240 + f.x, 190 + f.y);
   ctx.rotate(f.roll * 0.7);
+  // うなずき(縦の首振り)は顔パーツ全体を上下にずらして表現する
+  const fShift = (f.pitch || 0) * 14;
 
   if (type === "maru") {
     ctx.fillStyle = roleMain;
@@ -639,17 +698,20 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.beginPath();
     ctx.ellipse(10, -122, 14, 8, -0.5, 0, Math.PI * 2);
     ctx.fill();
+    ctx.save();
+    ctx.translate(0, fShift);
     // 顔のパネル(うっすら明るく)
     ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
     ctx.beginPath();
     ctx.ellipse(0, 16, 66, 58, 0, 0, Math.PI * 2);
     ctx.fill();
-    drawCheeks(ctx, "rgba(255, 255, 255, 0.25)");
+    drawCheeks(ctx, "rgba(255, 255, 255, 0.25)", 22, f);
     drawFaceParts(ctx, f, {
       eyeStyle: "sclera", eyeColor: "#fff", pupilColor: "#27313f",
       browColor: "rgba(255, 255, 255, 0.85)", closedColor: "#fff",
       mouthColor: "#27313f", eyeY: -12, mouthY: 38,
     });
+    ctx.restore();
   } else if (type === "neko") {
     // 耳(頭より先に描いて後ろに重ねる)
     for (const sx of [-1, 1]) {
@@ -672,6 +734,8 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.beginPath();
     ctx.arc(0, 0, 92, 0, Math.PI * 2);
     ctx.fill();
+    ctx.save();
+    ctx.translate(0, fShift);
     // 口元の白いマズル
     ctx.fillStyle = "#f4f1ea";
     ctx.beginPath();
@@ -696,12 +760,13 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
         ctx.stroke();
       }
     }
-    drawCheeks(ctx, "rgba(238, 108, 77, 0.22)");
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.22)", 22, f);
     drawFaceParts(ctx, f, {
       eyeStyle: "sclera", eyeColor: "#fff", pupilColor: "#3a4250",
       browColor: "rgba(70, 80, 95, 0.7)", closedColor: "#3a4250",
       mouthColor: "#7a4a52", eyeY: -16, mouthY: 42, mouthW: 26, openScale: 24,
     });
+    ctx.restore();
   } else if (type === "usagi") {
     // 長い耳
     for (const sx of [-1, 1]) {
@@ -722,6 +787,8 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.beginPath();
     ctx.arc(0, 0, 92, 0, Math.PI * 2);
     ctx.fill();
+    ctx.save();
+    ctx.translate(0, fShift);
     // 鼻
     ctx.fillStyle = "#e88a96";
     ctx.beginPath();
@@ -730,12 +797,13 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.lineTo(0, 29);
     ctx.closePath();
     ctx.fill();
-    drawCheeks(ctx, "rgba(238, 108, 77, 0.25)");
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.25)", 22, f);
     drawFaceParts(ctx, f, {
       eyeStyle: "dot", pupilColor: "#4a3f38",
       browColor: "rgba(120, 100, 85, 0.7)", closedColor: "#4a3f38",
       mouthColor: "#7a4a52", eyeY: -14, mouthY: 40, mouthW: 24, openScale: 22,
     });
+    ctx.restore();
   } else if (type === "kuma") {
     // 丸い耳
     for (const sx of [-1, 1]) {
@@ -752,6 +820,8 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.beginPath();
     ctx.arc(0, 0, 92, 0, Math.PI * 2);
     ctx.fill();
+    ctx.save();
+    ctx.translate(0, fShift);
     // マズル
     ctx.fillStyle = "#e8d3b8";
     ctx.beginPath();
@@ -762,12 +832,13 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.beginPath();
     ctx.ellipse(0, 20, 10, 7, 0, 0, Math.PI * 2);
     ctx.fill();
-    drawCheeks(ctx, "rgba(238, 108, 77, 0.2)");
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.2)", 22, f);
     drawFaceParts(ctx, f, {
       eyeStyle: "dot", pupilColor: "#3f3128",
       browColor: "rgba(90, 70, 52, 0.8)", closedColor: "#3f3128",
       mouthColor: "#6b4b38", eyeY: -16, mouthY: 42, mouthW: 26, openScale: 24,
     });
+    ctx.restore();
   } else if (type === "hito") {
     // 首
     ctx.fillStyle = "#f0c8a2";
@@ -798,47 +869,26 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
     ctx.quadraticCurveTo(-74, -36, -90, -2);
     ctx.closePath();
     ctx.fill();
-    drawCheeks(ctx, "rgba(238, 108, 77, 0.18)", 26);
+    ctx.save();
+    ctx.translate(0, fShift);
+    drawCheeks(ctx, "rgba(238, 108, 77, 0.18)", 26, f);
     drawFaceParts(ctx, f, {
       eyeStyle: "sclera", eyeColor: "#fff", pupilColor: "#3a3026",
       browColor: "#4d3a2c", closedColor: "#3a3026",
       mouthColor: "#a8493f", eyeY: -6, mouthY: 44,
     });
+    ctx.restore();
   }
 
   ctx.restore();
   ctx.restore();
-}
-
-/* リアルモードのサムネイル(3D読み込み済みならその姿、未読み込みならプレースホルダ) */
-function drawRealThumb(ctx, W, H) {
-  drawAvatarBackground(ctx, W, H);
-  if (vrmState) {
-    try {
-      updateVRMFrame();
-      ctx.drawImage(vrmState.canvas, 0, 0, W, H);
-      return;
-    } catch { /* 描画に失敗したらプレースホルダへ */ }
-  }
-  // 人型シルエット + 3Dバッジ
-  ctx.fillStyle = "#aab4c2";
-  ctx.beginPath();
-  ctx.arc(W / 2, H * 0.42, H * 0.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(W / 2, H * 1.05, W * 0.32, H * 0.42, 0, Math.PI, 2 * Math.PI);
-  ctx.fill();
-  ctx.fillStyle = "#3d5a80";
-  ctx.font = `bold ${Math.round(H / 5)}px sans-serif`;
-  ctx.textAlign = "center";
-  ctx.fillText("3D", W / 2, H * 0.3);
 }
 
 /* 同意画面のアバター選択サムネイルを描画する */
 function renderAvatarPicker() {
   const list = $("avatar-list");
   list.innerHTML = "";
-  const preview = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0.15, smile: 0.45, brow: 0.1 };
+  const preview = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0.15, smile: 0.45, brow: 0.1 };
   for (const [mode, title] of [["toon", "デフォルメモード"], ["real", "リアルモード"]]) {
     const heading = document.createElement("div");
     heading.className = "avatar-mode-title";
@@ -851,29 +901,30 @@ function renderAvatarPicker() {
       const opt = document.createElement("button");
       opt.type = "button";
       opt.className = "avatar-option" + (type === avatarType ? " selected" : "");
-      const cv = document.createElement("canvas");
-      cv.width = 96;
-      cv.height = 72;
       if (mode === "real") {
-        drawRealThumb(cv.getContext("2d"), 96, 72);
+        // VRMメタ情報から抽出したサムネイル画像
+        const img = document.createElement("img");
+        img.src = def.thumb;
+        img.alt = def.label;
+        img.width = 96;
+        img.height = 72;
+        opt.appendChild(img);
       } else {
+        const cv = document.createElement("canvas");
+        cv.width = 96;
+        cv.height = 72;
         drawAvatarOn(cv.getContext("2d"), 96, 72, type, myRole || "listener", preview);
+        opt.appendChild(cv);
       }
       const label = document.createElement("small");
       label.textContent = def.label;
-      opt.appendChild(cv);
       opt.appendChild(label);
       opt.onclick = () => {
         avatarType = type;
         localStorage.setItem("vm_avatar", type);
         list.querySelectorAll(".avatar-option").forEach((el) => el.classList.remove("selected"));
         opt.classList.add("selected");
-        if (def.mode === "real") {
-          // 3Dモデルを先読みし、読み込み完了したらサムネイルを実際の姿に差し替える
-          loadVRM().then((state) => {
-            if (state && !$("screen-consent").classList.contains("hidden")) renderAvatarPicker();
-          });
-        }
+        if (def.mode === "real") loadVRM(type); // 3Dモデルを先読み
       };
       row.appendChild(opt);
     }
