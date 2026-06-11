@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VideoMatch - ランダムビデオ通話</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🎥 VideoMatch</h1>
+    <div id="user-info" class="hidden">
+      <span id="user-name"></span>
+      <button id="btn-logout" class="btn-text">ログアウト</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ログイン / 登録 -->
+    <section id="screen-auth" class="screen card">
+      <div class="tabs">
+        <button id="tab-login" class="tab active">ログイン</button>
+        <button id="tab-register" class="tab">新規登録</button>
+      </div>
+      <form id="auth-form">
+        <label>ユーザー名
+          <input type="text" id="auth-username" required minlength="2" maxlength="50" autocomplete="username">
+        </label>
+        <label>パスワード(6文字以上)
+          <input type="password" id="auth-password" required minlength="6" maxlength="128" autocomplete="current-password">
+        </label>
+        <button type="submit" id="auth-submit" class="btn-primary">ログイン</button>
+        <p id="auth-error" class="error"></p>
+      </form>
+    </section>
+
+    <!-- ダッシュボード(ログイン後トップ) -->
+    <section id="screen-lobby" class="screen hidden">
+      <div class="panel hero">
+        <div class="hero-left">
+          <h2>こんにちは、<span id="dash-username"></span> さん!</h2>
+          <p class="note">「マッチング開始」を押すと、待機中のユーザーからランダムに相手が選ばれます。<br>📷 通話にはカメラとマイクを使用します。許可ダイアログが出たら「許可」を選んでください。</p>
+          <p id="lobby-error" class="error"></p>
+        </div>
+        <div class="hero-right">
+          <div class="stats">
+            <div class="stat"><span id="stat-online">-</span><small>オンライン</small></div>
+            <div class="stat"><span id="stat-waiting">-</span><small>待機中</small></div>
+            <div class="stat"><span id="stat-users">-</span><small>登録者</small></div>
+          </div>
+          <button id="btn-start-matching" class="btn-primary">🎥 マッチング開始</button>
+        </div>
+      </div>
+
+      <div class="dash-grid">
+        <div class="panel">
+          <h3>📢 お知らせ</h3>
+          <ul id="announcement-list" class="announcement-list"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>📅 イベントカレンダー</h3>
+          <div class="cal-header">
+            <button id="cal-prev" class="btn-text">◀</button>
+            <strong id="cal-title"></strong>
+            <button id="cal-next" class="btn-text">▶</button>
+          </div>
+          <div id="calendar" class="calendar"></div>
+          <ul id="event-list" class="event-list"></ul>
+          <form id="event-form" class="inline-form">
+            <input type="date" id="event-date" required>
+            <input type="text" id="event-title" placeholder="イベント名" required maxlength="200">
+            <button type="submit" class="btn-small">追加</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h3>💬 みんなの掲示板</h3>
+          <form id="post-form" class="inline-form">
+            <input type="text" id="post-body" placeholder="メッセージを書く…" required maxlength="1000">
+            <button type="submit" class="btn-small">送信</button>
+          </form>
+          <ul id="post-list" class="post-list"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>📋 通話履歴(アンケート回答)</h3>
+          <ul id="history-list" class="history-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- マッチング待機中 -->
+    <section id="screen-waiting" class="screen card hidden">
+      <div class="spinner"></div>
+      <h2>マッチング相手を探しています…</h2>
+      <p>待機中のユーザーが見つかり次第、自動的に次へ進みます。</p>
+      <button id="btn-cancel-matching" class="btn-secondary">キャンセル</button>
+    </section>
+
+    <!-- 通話前の注意事項(同意画面) -->
+    <section id="screen-consent" class="screen card hidden">
+      <h2>マッチングしました!</h2>
+      <p>お相手: <strong id="consent-peer"></strong> さん</p>
+      <div class="consent-box">
+        <h3>通話前の注意事項</h3>
+        <ul>
+          <li>相手に対して誹謗中傷・差別的発言をしないでください</li>
+          <li>個人情報(住所・電話番号など)の交換は控えてください</li>
+          <li>不適切な映像・音声を流さないでください</li>
+          <li>通話終了後、アンケートにご協力ください</li>
+        </ul>
+      </div>
+      <p>同意したユーザーのみ通話ルームに入室できます。</p>
+      <div class="btn-row">
+        <button id="btn-consent-ok" class="btn-primary">同意して通話する</button>
+        <button id="btn-consent-ng" class="btn-secondary">同意しない</button>
+      </div>
+      <p id="consent-status" class="note"></p>
+    </section>
+
+    <!-- ビデオ通話 -->
+    <section id="screen-call" class="screen hidden">
+      <div class="video-area">
+        <video id="remote-video" autoplay playsinline></video>
+        <video id="local-video" autoplay playsinline muted></video>
+        <div id="call-status" class="call-status">接続中…</div>
+      </div>
+      <div class="btn-row center">
+        <button id="btn-end-call" class="btn-danger">通話を終了する</button>
+      </div>
+    </section>
+
+    <!-- アンケート -->
+    <section id="screen-survey" class="screen card hidden">
+      <h2>通話おつかれさまでした!</h2>
+      <p>今回の通話についてアンケートにご協力ください。</p>
+      <form id="survey-form">
+        <label>通話の満足度</label>
+        <div class="stars" id="star-rating">
+          <input type="radio" name="rating" value="5" id="star5"><label for="star5">★</label>
+          <input type="radio" name="rating" value="4" id="star4"><label for="star4">★</label>
+          <input type="radio" name="rating" value="3" id="star3" checked><label for="star3">★</label>
+          <input type="radio" name="rating" value="2" id="star2"><label for="star2">★</label>
+          <input type="radio" name="rating" value="1" id="star1"><label for="star1">★</label>
+        </div>
+        <label class="checkbox-label">
+          <input type="checkbox" id="survey-again"> また同じ相手と話したい
+        </label>
+        <label>コメント(任意)
+          <textarea id="survey-comment" rows="3" maxlength="2000" placeholder="感想があればご記入ください"></textarea>
+        </label>
+        <button type="submit" class="btn-primary">送信する</button>
+        <p id="survey-error" class="error"></p>
+      </form>
+    </section>
+
+    <!-- 完了 -->
+    <section id="screen-done" class="screen card hidden">
+      <h2>✅ ご回答ありがとうございました!</h2>
+      <button id="btn-back-lobby" class="btn-primary">ロビーへ戻る</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
