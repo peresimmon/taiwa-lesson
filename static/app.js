@@ -288,6 +288,10 @@ let audioAnalyser = null; // トラッキング不可時のフォールバック
 const faceCur = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
 const faceTgt = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
 
+// うなずきの中立姿勢キャリブレーション(カメラ位置による角度オフセット対策)
+let pitchBase = null;
+let pitchFrames = 0;
+
 function loadFaceLandmarker() {
   if (!landmarkerPromise) {
     landmarkerPromise = (async () => {
@@ -393,7 +397,19 @@ function updateFaceFromResult(res) {
   if (mtx && mtx.data) {
     const d = mtx.data;
     const pitchRad = Math.atan2(-d[9], d[10]);
-    faceTgt.pitch = Math.max(-1, Math.min(1, pitchRad / 0.5)); // ±約30度で振り切り
+    // 行列の角度は「カメラから見た角度」のため、カメラが顔より上/下に
+    // あると常時オフセットが乗る。通話開始直後の約2秒間の平均を
+    // 中立姿勢とみなして差し引く(自動キャリブレーション)
+    if (pitchBase === null) {
+      pitchBase = pitchRad;
+    } else if (pitchFrames < 60) {
+      pitchBase += (pitchRad - pitchBase) * 0.1;
+    } else if (Math.abs(pitchRad - pitchBase) < 0.12) {
+      // 以降は中立付近のゆっくりしたずれ(姿勢の変化など)だけ追従する
+      pitchBase += (pitchRad - pitchBase) * 0.01;
+    }
+    pitchFrames++;
+    faceTgt.pitch = Math.max(-1, Math.min(1, (pitchRad - pitchBase) / 0.5)); // 中立から±約30度で振り切り
   }
   const bs = {};
   if (res.faceBlendshapes && res.faceBlendshapes[0]) {
@@ -1037,6 +1053,8 @@ function endCallToSurvey(sendLeave) {
 function cleanupCall(clearRoom = true) {
   if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
   if (avatarLoop) { cancelAnimationFrame(avatarLoop); avatarLoop = null; }
+  pitchBase = null; // 次の通話で中立姿勢を取り直す
+  pitchFrames = 0;
   if (pc) { pc.close(); pc = null; }
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
