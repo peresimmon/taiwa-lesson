@@ -46,10 +46,23 @@
         <div class="hero-right">
           <div class="stats">
             <div class="stat"><span id="stat-online">-</span><small>オンライン</small></div>
-            <div class="stat"><span id="stat-waiting">-</span><small>待機中</small></div>
+            <div class="stat"><span id="stat-speakers">-</span><small>話し手 待機</small></div>
+            <div class="stat"><span id="stat-listeners">-</span><small>聞き手 待機</small></div>
             <div class="stat"><span id="stat-users">-</span><small>登録者</small></div>
           </div>
-          <button id="btn-start-matching" class="btn-primary">セッション相手を探す</button>
+          <div class="role-select">
+            <button type="button" id="role-speaker" class="role-btn">
+              <span class="role-icon">🗣️</span>
+              <strong>話し手</strong>
+              <small>聴いてもらいたい</small>
+            </button>
+            <button type="button" id="role-listener" class="role-btn">
+              <span class="role-icon">👂</span>
+              <strong>聞き手</strong>
+              <small>「聴く力」を鍛えたい</small>
+            </button>
+          </div>
+          <button id="btn-start-matching" class="btn-primary" disabled>役割を選んでください</button>
         </div>
       </div>
 
@@ -95,14 +108,17 @@
     <section id="screen-waiting" class="screen card hidden">
       <div class="spinner"></div>
       <h2>対話の相手を探しています…</h2>
-      <p>待機中のユーザーが見つかり次第、自動的にマッチングされます。</p>
+      <p id="waiting-role" class="waiting-role"></p>
+      <p id="waiting-note">相手が見つかり次第、自動的にマッチングされます。</p>
       <button id="btn-cancel-matching" class="btn-secondary">キャンセル</button>
     </section>
 
     <!-- 対話のルール（同意画面） -->
     <section id="screen-consent" class="screen card hidden">
       <h2>相手が見つかりました</h2>
-      <p>お相手: <strong id="consent-peer"></strong> さん</p>
+      <p>お相手: <strong id="consent-peer"></strong> さん（<span id="consent-peer-role"></span>）</p>
+      <p>あなたの呼び名: <strong id="consent-my-name"></strong>（<span id="consent-my-role"></span>）</p>
+      <p class="note">呼び名はこのセッション限定でランダムに割り振られます。本名やユーザー名は相手に伝わりません。</p>
       <div class="consent-box">
         <h3>対話のルール</h3>
         <ul>
@@ -123,13 +139,27 @@
 
     <!-- 対話セッション -->
     <section id="screen-call" class="screen hidden">
-      <div class="session-timer">
-        <small>セッション残り時間</small>
-        <span id="timer-display">10:00</span>
+      <div class="call-info">
+        <div class="call-id">
+          <small>あなた</small>
+          <strong id="call-my-name"></strong>
+          <span id="call-my-role" class="role-tag"></span>
+        </div>
+        <div class="session-timer">
+          <small>セッション残り時間</small>
+          <span id="timer-display">10:00</span>
+        </div>
+        <div class="call-id">
+          <small>お相手</small>
+          <strong id="call-peer-name"></strong>
+          <span id="call-peer-role" class="role-tag"></span>
+        </div>
       </div>
       <div class="video-area">
         <video id="remote-video" autoplay playsinline></video>
+        <div id="remote-label" class="video-label"></div>
         <video id="local-video" autoplay playsinline muted></video>
+        <div id="local-label" class="video-label local-label"></div>
         <div id="call-status" class="call-status">接続中…</div>
       </div>
       <div class="btn-row center">

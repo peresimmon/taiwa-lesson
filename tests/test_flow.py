@@ -78,16 +78,21 @@ async def test_matching_flow(users):
     ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
     ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
 
-    await ws1.send(json.dumps({"type": "join_queue"}))
-    await recv_type(ws1, "queued")
-    await ws2.send(json.dumps({"type": "join_queue"}))
-    await recv_type(ws2, "queued")
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
+    q = await recv_type(ws1, "queued")
+    check("queuedに役割が入る", q["role"] == "speaker", q)
+    await ws2.send(json.dumps({"type": "join_queue", "role": "listener"}))
 
     m1 = await recv_type(ws1, "matched")
     m2 = await recv_type(ws2, "matched")
     check("両者にmatched", m1["room_id"] == m2["room_id"], f"{m1} / {m2}")
-    check("相手の名前が正しい",
-          m1["peer_name"] == users[1]["username"] and m2["peer_name"] == users[0]["username"])
+    check("役割が話し手×聞き手",
+          m1["my_role"] == "speaker" and m1["peer_role"] == "listener"
+          and m2["my_role"] == "listener" and m2["peer_role"] == "speaker", f"{m1} / {m2}")
+    check("呼び名が交差して一致し、互いに異なる",
+          m1["my_nickname"] == m2["peer_nickname"]
+          and m2["my_nickname"] == m1["peer_nickname"]
+          and m1["my_nickname"] != m1["peer_nickname"], f"{m1} / {m2}")
     room_id = m1["room_id"]
 
     # 双方同意
@@ -133,12 +138,36 @@ def test_survey(users, room_id):
     check("自分の回答を取得", r.status_code == 200 and len(rows) == 1 and rows[0]["rating"] == 4, r.text)
 
 
-async def test_decline_flow(users):
-    print("[4] 同意拒否フロー")
+async def test_same_role_no_match(users):
+    print("[4] 同じ役割同士はマッチしない")
     ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
     ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
-    await ws1.send(json.dumps({"type": "join_queue"}))
-    await ws2.send(json.dumps({"type": "join_queue"}))
+    await ws1.send(json.dumps({"type": "join_queue", "role": "listener"}))
+    await recv_type(ws1, "queued")
+    await ws2.send(json.dumps({"type": "join_queue", "role": "listener"}))
+    await recv_type(ws2, "queued")
+    try:
+        await recv_type(ws1, "matched", timeout=1.5)
+        check("聞き手同士はマッチしない", False, "matchedが届いてしまった")
+    except TimeoutError:
+        check("聞き手同士はマッチしない", True)
+
+    # 役割未指定はエラー
+    ws1b = ws1
+    await ws1b.send(json.dumps({"type": "cancel_queue"}))
+    await ws1b.send(json.dumps({"type": "join_queue"}))
+    err = await recv_type(ws1b, "error")
+    check("役割未指定はエラー", "選んで" in err["message"], err)
+    await ws1.close()
+    await ws2.close()
+
+
+async def test_decline_flow(users):
+    print("[5] 同意拒否フロー")
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
+    await ws2.send(json.dumps({"type": "join_queue", "role": "listener"}))
     await recv_type(ws1, "matched")
     await recv_type(ws2, "matched")
 
@@ -150,17 +179,17 @@ async def test_decline_flow(users):
 
 
 async def test_disconnect_during_wait(users):
-    print("[5] 待機中の切断")
+    print("[6] 待機中の切断")
     ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
-    await ws1.send(json.dumps({"type": "join_queue"}))
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
     await recv_type(ws1, "queued")
     await ws1.close()
     # 切断後に別の2人が正常にマッチできること(キューに残骸が残らない)
     ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
     ws3 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
-    await ws2.send(json.dumps({"type": "join_queue"}))
+    await ws2.send(json.dumps({"type": "join_queue", "role": "speaker"}))
     await recv_type(ws2, "queued")
-    await ws3.send(json.dumps({"type": "join_queue"}))
+    await ws3.send(json.dumps({"type": "join_queue", "role": "listener"}))
     m = await recv_type(ws3, "matched")
     check("切断後も正常にマッチング", bool(m["room_id"]))
     await ws2.close()
@@ -168,7 +197,7 @@ async def test_disconnect_during_wait(users):
 
 
 def test_dashboard(users):
-    print("[6] ダッシュボードAPI")
+    print("[7] ダッシュボードAPI")
     headers = {"Authorization": f"Bearer {users[0]['token']}"}
 
     # お知らせ(初期データが入っている)
@@ -209,13 +238,15 @@ def test_dashboard(users):
     r = requests.get(f"{BASE}/api/stats", headers=headers)
     s = r.json()
     check("統計取得", r.status_code == 200 and s["total_users"] >= 2
-          and "online" in s and "waiting" in s, r.text)
+          and "online" in s and "waiting" in s
+          and "waiting_speakers" in s and "waiting_listeners" in s, r.text)
 
 
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
     test_survey(users, room_id)
+    await test_same_role_no_match(users)
     await test_decline_flow(users)
     await test_disconnect_during_wait(users)
     test_dashboard(users)

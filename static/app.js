@@ -15,6 +15,11 @@ let isInitiator = false;
 let pendingCandidates = []; // remoteDescription設定前に届いたICE候補
 let sessionTimer = null;
 let sessionSeconds = 600; // 10分 = 600秒
+let selectedRole = "";   // ダッシュボードで選んだ役割 ("speaker" | "listener")
+let myRole = "";         // 現在のセッションでの役割
+let myNickname = "";     // セッション限定のランダムな呼び名
+let peerRole = "";
+let peerNickname = "";
 
 const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -22,6 +27,8 @@ const RTC_CONFIG = {
 
 // ---- ユーティリティ -----------------------------------------------------------
 const $ = (id) => document.getElementById(id);
+
+const roleLabel = (role) => (role === "speaker" ? "話し手" : "聞き手");
 
 function showScreen(name) {
   document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
@@ -146,13 +153,24 @@ function wsSend(payload) {
 
 async function handleWSMessage(msg) {
   switch (msg.type) {
-    case "queued":
+    case "queued": {
+      const opposite = msg.role === "speaker" ? "listener" : "speaker";
+      $("waiting-role").textContent = `あなたの役割: ${roleLabel(msg.role)}`;
+      $("waiting-note").textContent = `${roleLabel(opposite)}の方が見つかり次第、自動的にマッチングされます。`;
       showScreen("waiting");
       break;
+    }
 
     case "matched":
       currentRoomId = msg.room_id;
-      $("consent-peer").textContent = msg.peer_name;
+      myRole = msg.my_role;
+      myNickname = msg.my_nickname;
+      peerRole = msg.peer_role;
+      peerNickname = msg.peer_nickname;
+      $("consent-peer").textContent = peerNickname;
+      $("consent-peer-role").textContent = roleLabel(peerRole);
+      $("consent-my-name").textContent = myNickname;
+      $("consent-my-role").textContent = roleLabel(myRole);
       $("consent-status").textContent = "";
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
@@ -165,9 +183,9 @@ async function handleWSMessage(msg) {
       break;
 
     case "peer_declined":
-      // 相手が同意しなかった → 自動で再マッチング
+      // 相手が同意しなかった → 同じ役割で自動再マッチング
       cleanupCall(false);
-      wsSend({ type: "join_queue" });
+      wsSend({ type: "join_queue", role: myRole || selectedRole });
       break;
 
     case "signal":
@@ -193,11 +211,26 @@ async function handleWSMessage(msg) {
 }
 
 // ---- マッチング -----------------------------------------------------------------
+function selectRole(role) {
+  selectedRole = role;
+  $("role-speaker").classList.toggle("selected", role === "speaker");
+  $("role-listener").classList.toggle("selected", role === "listener");
+  const btn = $("btn-start-matching");
+  btn.disabled = false;
+  btn.textContent = `${roleLabel(role)}として相手を探す`;
+}
+$("role-speaker").onclick = () => selectRole("speaker");
+$("role-listener").onclick = () => selectRole("listener");
+
 $("btn-start-matching").onclick = async () => {
   $("lobby-error").textContent = "";
+  if (!selectedRole) {
+    $("lobby-error").textContent = "「話し手」か「聞き手」を選んでください";
+    return;
+  }
   try {
     if (!ws) await connectWS();
-    wsSend({ type: "join_queue" });
+    wsSend({ type: "join_queue", role: selectedRole });
   } catch (err) {
     $("lobby-error").textContent = err.message;
   }
@@ -236,6 +269,15 @@ $("btn-consent-ng").onclick = () => {
 // ---- WebRTC通話 -----------------------------------------------------------------
 async function startCall() {
   showScreen("call");
+  // 役割とセッション限定の呼び名を常時表示する
+  $("call-my-name").textContent = myNickname;
+  $("call-my-role").textContent = roleLabel(myRole);
+  $("call-my-role").className = `role-tag ${myRole}`;
+  $("call-peer-name").textContent = peerNickname;
+  $("call-peer-role").textContent = roleLabel(peerRole);
+  $("call-peer-role").className = `role-tag ${peerRole}`;
+  $("remote-label").textContent = `${peerNickname}（${roleLabel(peerRole)}）`;
+  $("local-label").textContent = `${myNickname}（${roleLabel(myRole)}）`;
   $("call-status").textContent = "接続中…";
   pendingCandidates = [];
 
@@ -390,7 +432,8 @@ function parseUTC(s) {
 
 function renderStats(stats) {
   $("stat-online").textContent = stats.online;
-  $("stat-waiting").textContent = stats.waiting;
+  $("stat-speakers").textContent = stats.waiting_speakers;
+  $("stat-listeners").textContent = stats.waiting_listeners;
   $("stat-users").textContent = stats.total_users;
 }
 

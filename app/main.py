@@ -266,10 +266,13 @@ def create_post(
 @app.get("/api/stats")
 def stats(user: User = Depends(current_user), db: Session = Depends(get_db)):
     """ダッシュボード表示用の統計(オンライン=WebSocket接続中)"""
+    counts = manager.waiting_counts()
     return {
         "total_users": db.query(User).count(),
         "online": len(manager.clients),
-        "waiting": len(manager.waiting),
+        "waiting": counts["speakers"] + counts["listeners"],
+        "waiting_speakers": counts["speakers"],
+        "waiting_listeners": counts["listeners"],
     }
 
 
@@ -305,7 +308,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
             msg = await ws.receive_json()
             msg_type = msg.get("type")
             if msg_type == "join_queue":
-                await manager.join_queue(client)
+                await manager.join_queue(client, msg.get("role") or "")
             elif msg_type == "cancel_queue":
                 await manager.cancel_queue(client)
             elif msg_type == "consent":
