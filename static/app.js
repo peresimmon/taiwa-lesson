@@ -175,6 +175,7 @@ async function handleWSMessage(msg) {
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
       loadFaceLandmarker(); // 同意画面の間にモデルを先読みしておく
+      if (AVATARS[avatarType].mode === "real") loadVRM();
       renderAvatarPicker();
       showScreen("consent");
       break;
@@ -331,6 +332,9 @@ async function buildAvatarStream() {
 
   await loadFaceLandmarker();
   if (!faceLandmarker) setupAudioFallback();
+  if (AVATARS[avatarType].mode === "real") {
+    await loadVRM(); // 失敗してもデフォルメ表示にフォールバックして続行
+  }
 
   startAvatarLoop(trackVideo);
 
@@ -393,18 +397,125 @@ function updateFaceFromResult(res) {
 }
 
 // ---- アバターの種類 -----------------------------------------------------------
+// mode: "toon"=デフォルメ(2D Canvas) / "real"=リアル(3D VRM)
 const AVATARS = {
-  maru: { label: "まる" },
-  neko: { label: "ねこ" },
-  usagi: { label: "うさぎ" },
-  kuma: { label: "くま" },
-  hito: { label: "ひと" },
+  maru: { label: "まる", mode: "toon" },
+  neko: { label: "ねこ", mode: "toon" },
+  usagi: { label: "うさぎ", mode: "toon" },
+  kuma: { label: "くま", mode: "toon" },
+  hito: { label: "ひと", mode: "toon" },
+  hinata: { label: "ひなた", mode: "real" },
 };
 let avatarType = localStorage.getItem("vm_avatar") || "maru";
 if (!AVATARS[avatarType]) avatarType = "maru";
 
 function drawAvatar() {
-  drawAvatarOn(avatarCtx, avatarCanvas.width, avatarCanvas.height, avatarType, myRole, faceCur);
+  const W = avatarCanvas.width, H = avatarCanvas.height;
+  if (AVATARS[avatarType].mode === "real" && vrmState) {
+    updateVRMFrame();
+    drawAvatarBackground(avatarCtx, W, H);
+    avatarCtx.drawImage(vrmState.canvas, 0, 0, W, H);
+    return;
+  }
+  // デフォルメ(2D)。リアル選択中でも3Dの読み込みが終わるまでは「まる」でつなぐ
+  const type = AVATARS[avatarType].mode === "real" ? "maru" : avatarType;
+  drawAvatarOn(avatarCtx, W, H, type, myRole, faceCur);
+  if (AVATARS[avatarType].mode === "real") {
+    avatarCtx.fillStyle = "rgba(41, 50, 65, 0.7)";
+    avatarCtx.font = `${Math.round(H / 24)}px sans-serif`;
+    avatarCtx.textAlign = "center";
+    avatarCtx.fillText("3Dアバターを準備中…", W / 2, H - H / 18);
+  }
+}
+
+// ---- リアルモード(3D VRMアバター) ----------------------------------------------
+const VRM_MODEL_URL = "models/avatar_real.vrm";
+let vrmState = null;   // { renderer, scene, camera, vrm, clock, canvas }
+let vrmPromise = null;
+
+function loadVRM() {
+  if (!vrmPromise) {
+    vrmPromise = (async () => {
+      const THREE = await import("three");
+      const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+      const { VRMLoaderPlugin, VRMUtils } = await import("@pixiv/three-vrm");
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 480;
+      canvas.height = 360;
+      const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      renderer.setPixelRatio(1);
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(28, 480 / 360, 0.1, 20);
+      const keyLight = new THREE.DirectionalLight(0xffffff, Math.PI * 0.9);
+      keyLight.position.set(0.5, 1.2, 1.5);
+      scene.add(keyLight);
+      scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.45));
+
+      const loader = new GLTFLoader();
+      loader.register((parser) => new VRMLoaderPlugin(parser));
+      const gltf = await loader.loadAsync(VRM_MODEL_URL);
+      const vrm = gltf.userData.vrm;
+      VRMUtils.rotateVRM0(vrm); // VRM0系モデルでも正面を向くように
+      scene.add(vrm.scene);
+
+      // Tポーズのままだと腕が映り込むので下ろす
+      const lArm = vrm.humanoid.getNormalizedBoneNode("leftUpperArm");
+      const rArm = vrm.humanoid.getNormalizedBoneNode("rightUpperArm");
+      if (lArm) lArm.rotation.z = -1.2;
+      if (rArm) rArm.rotation.z = 1.2;
+      vrm.humanoid.update();
+
+      // 顔の高さにカメラを合わせてバストアップ構図にする
+      const head = vrm.humanoid.getNormalizedBoneNode("head");
+      const headPos = new THREE.Vector3();
+      head.getWorldPosition(headPos);
+      camera.position.set(headPos.x, headPos.y + 0.04, headPos.z + 0.78);
+      camera.lookAt(headPos.x, headPos.y - 0.05, headPos.z);
+
+      vrmState = { renderer, scene, camera, vrm, clock: new THREE.Clock(), canvas };
+      return vrmState;
+    })().catch((err) => {
+      console.warn("3Dアバターを読み込めませんでした。デフォルメ表示で続行します", err);
+      vrmPromise = null; // 次回再試行できるようにする
+      return null;
+    });
+  }
+  return vrmPromise;
+}
+
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+
+function updateVRMFrame() {
+  const { renderer, scene, camera, vrm, clock } = vrmState;
+  const em = vrm.expressionManager;
+  if (em) {
+    // VRMのblinkLeftはアバター自身の左目=画面右側。2D側とは左右が逆になる
+    em.setValue("blinkLeft", clamp01(faceCur.blinkR));
+    em.setValue("blinkRight", clamp01(faceCur.blinkL));
+    em.setValue("aa", clamp01(faceCur.jaw * 1.4));
+    em.setValue("happy", clamp01(faceCur.smile));
+    em.setValue("surprised", clamp01(faceCur.brow * 0.6));
+  }
+  const head = vrm.humanoid.getNormalizedBoneNode("head");
+  if (head) {
+    head.rotation.set(
+      -faceCur.y / 120 * 0.5,      // うなずき
+      faceCur.x / 160 * 0.6,       // 左右の向き
+      faceCur.roll * 0.6           // 首かしげ
+    );
+  }
+  vrm.update(clock.getDelta());
+  renderer.render(scene, camera);
+}
+
+function drawAvatarBackground(ctx, W, H) {
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#f8f0e5");
+  bg.addColorStop(1, "#e8d5bf");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
 }
 
 /* ほっぺ */
@@ -699,30 +810,74 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
   ctx.restore();
 }
 
+/* リアルモードのサムネイル(3D読み込み済みならその姿、未読み込みならプレースホルダ) */
+function drawRealThumb(ctx, W, H) {
+  drawAvatarBackground(ctx, W, H);
+  if (vrmState) {
+    try {
+      updateVRMFrame();
+      ctx.drawImage(vrmState.canvas, 0, 0, W, H);
+      return;
+    } catch { /* 描画に失敗したらプレースホルダへ */ }
+  }
+  // 人型シルエット + 3Dバッジ
+  ctx.fillStyle = "#aab4c2";
+  ctx.beginPath();
+  ctx.arc(W / 2, H * 0.42, H * 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(W / 2, H * 1.05, W * 0.32, H * 0.42, 0, Math.PI, 2 * Math.PI);
+  ctx.fill();
+  ctx.fillStyle = "#3d5a80";
+  ctx.font = `bold ${Math.round(H / 5)}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.fillText("3D", W / 2, H * 0.3);
+}
+
 /* 同意画面のアバター選択サムネイルを描画する */
 function renderAvatarPicker() {
   const list = $("avatar-list");
   list.innerHTML = "";
   const preview = { x: 0, y: 0, roll: 0, blinkL: 0, blinkR: 0, jaw: 0.15, smile: 0.45, brow: 0.1 };
-  for (const [type, def] of Object.entries(AVATARS)) {
-    const opt = document.createElement("button");
-    opt.type = "button";
-    opt.className = "avatar-option" + (type === avatarType ? " selected" : "");
-    const cv = document.createElement("canvas");
-    cv.width = 96;
-    cv.height = 72;
-    drawAvatarOn(cv.getContext("2d"), 96, 72, type, myRole || "listener", preview);
-    const label = document.createElement("small");
-    label.textContent = def.label;
-    opt.appendChild(cv);
-    opt.appendChild(label);
-    opt.onclick = () => {
-      avatarType = type;
-      localStorage.setItem("vm_avatar", type);
-      list.querySelectorAll(".avatar-option").forEach((el) => el.classList.remove("selected"));
-      opt.classList.add("selected");
-    };
-    list.appendChild(opt);
+  for (const [mode, title] of [["toon", "デフォルメモード"], ["real", "リアルモード"]]) {
+    const heading = document.createElement("div");
+    heading.className = "avatar-mode-title";
+    heading.textContent = title;
+    list.appendChild(heading);
+    const row = document.createElement("div");
+    row.className = "avatar-row";
+    for (const [type, def] of Object.entries(AVATARS)) {
+      if (def.mode !== mode) continue;
+      const opt = document.createElement("button");
+      opt.type = "button";
+      opt.className = "avatar-option" + (type === avatarType ? " selected" : "");
+      const cv = document.createElement("canvas");
+      cv.width = 96;
+      cv.height = 72;
+      if (mode === "real") {
+        drawRealThumb(cv.getContext("2d"), 96, 72);
+      } else {
+        drawAvatarOn(cv.getContext("2d"), 96, 72, type, myRole || "listener", preview);
+      }
+      const label = document.createElement("small");
+      label.textContent = def.label;
+      opt.appendChild(cv);
+      opt.appendChild(label);
+      opt.onclick = () => {
+        avatarType = type;
+        localStorage.setItem("vm_avatar", type);
+        list.querySelectorAll(".avatar-option").forEach((el) => el.classList.remove("selected"));
+        opt.classList.add("selected");
+        if (def.mode === "real") {
+          // 3Dモデルを先読みし、読み込み完了したらサムネイルを実際の姿に差し替える
+          loadVRM().then((state) => {
+            if (state && !$("screen-consent").classList.contains("hidden")) renderAvatarPicker();
+          });
+        }
+      };
+      row.appendChild(opt);
+    }
+    list.appendChild(row);
   }
 }
 

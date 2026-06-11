@@ -143,7 +143,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* アバター選択 */
 .avatar-select h3 { font-size: 0.95rem; color: var(--primary); margin: 14px 0 8px; }
-.avatar-list { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.avatar-list { margin-bottom: 14px; }
+.avatar-mode-title {
+  font-size: 0.78rem; font-weight: 600; color: var(--muted);
+  margin: 10px 0 6px; letter-spacing: 0.5px;
+}
+.avatar-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .avatar-option {
   border: 2px solid var(--border); border-radius: 12px; padding: 6px 6px 3px;
   background: var(--card); cursor: pointer; text-align: center;

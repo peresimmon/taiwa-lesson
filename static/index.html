@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>対話のおけいこ - 匿名対話トレーニング</title>
+  <!-- リアルモード(3D VRMアバター)用。bare specifierを単一のthreeに解決する -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.1.1/lib/three-vrm.module.js"
+    }
+  }
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
