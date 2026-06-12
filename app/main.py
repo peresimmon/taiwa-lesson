@@ -2005,6 +2005,203 @@ def sysadmin_site_settings(
     return _settings_payload(db, site_id)
 
 
+# --- デモデータ(本番運用では削除する → docs/TODO.md) ------------------------------
+
+DEMO_USER_PREFIX = "デモ_"  # 既存ユーザーと衝突しない識別子(削除時の目印にもなる)
+DEMO_NAMES = [
+    "さくら", "たろう", "ひかり", "けんた", "ゆい", "そうた",
+    "あおい", "りく", "めい", "はると", "ことは", "ゆうま",
+]
+DEMO_COMMENTS = [
+    "相手の話を最後まで聴けた気がします",
+    "途中で口を挟んでしまった。次は最後まで聴きたい",
+    "あいづちを意識したら会話が続いた",
+    "沈黙が怖くなくなってきた",
+    "質問のバリエーションを増やしたい",
+    "相手の表情をよく見て話せた",
+    "",
+]
+DEMO_POSTS = [
+    "今日の対話、とても勉強になりました!",
+    "「聴く」って意外と難しいですね…",
+    "あいづちのコツ、誰か教えてください",
+    "10分があっという間でした",
+    "役割交代してみると、話し手の気持ちがよく分かります",
+    "今週3回目のセッション完了!",
+]
+DEMO_EVENTS = ["みんなで傾聴会", "ふりかえり共有会", "対話のコツ勉強会", "新メンバー歓迎会"]
+
+
+@app.post("/api/sysadmin/demo-data", status_code=201)
+def create_demo_data(
+    admin: User = Depends(system_admin_user), db: Session = Depends(get_db)
+):
+    """デモ用のユーザー・チーム・履歴などを一括生成する(管理者のサイトに作成)"""
+    from datetime import timedelta
+
+    sid = admin.site_id
+    if (
+        db.query(User)
+        .filter(User.site_id == sid, User.username.startswith(DEMO_USER_PREFIX, autoescape=True))
+        .first()
+    ):
+        raise HTTPException(status_code=409, detail="デモデータは既に存在します。先に削除してください")
+
+    now = utcnow().replace(tzinfo=None)
+
+    # ユーザー(先頭2人はモデレータ)。パスワードは全員 demo1234
+    demo_users: list[User] = []
+    pw_hash = hash_password("demo1234")
+    for i, name in enumerate(DEMO_NAMES):
+        u = User(
+            site_id=sid,
+            username=f"{DEMO_USER_PREFIX}{name}",
+            password_hash=pw_hash,
+            role="moderator" if i < 2 else "user",
+            created_at=now - timedelta(days=random.randint(3, 30)),
+        )
+        db.add(u)
+        demo_users.append(u)
+    db.flush()
+
+    # チーム(先頭メンバーがリーダー)
+    team_defs = [
+        ("デモ_営業チーム", demo_users[0:5]),
+        ("デモ_開発チーム", demo_users[4:9]),
+        ("デモ_人事チーム", demo_users[9:12]),
+    ]
+    teams: list[Team] = []
+    for tname, members in team_defs:
+        team = Team(site_id=sid, name=tname)
+        db.add(team)
+        db.flush()
+        for j, m in enumerate(members):
+            db.add(TeamMember(team_id=team.id, user_id=m.id, is_leader=(j == 0)))
+        teams.append(team)
+
+    # 通話履歴(直近14日に分散。両者分のアンケートつき)
+    session_count = 30
+    for _ in range(session_count):
+        a, b = random.sample(demo_users, 2)
+        when = now - timedelta(days=random.randint(0, 13), hours=random.randint(0, 12))
+        call_id = "demo" + secrets.token_hex(14)
+        db.add(CallPair(call_id=call_id, site_id=sid, user_a=a.id, user_b=b.id, created_at=when))
+        for u in (a, b):
+            db.add(
+                Survey(
+                    user_id=u.id,
+                    room_id=call_id,
+                    rating=random.randint(3, 5),
+                    talk_again=random.random() < 0.5,
+                    comment=random.choice(DEMO_COMMENTS),
+                    created_at=when,
+                )
+            )
+
+    # 掲示板(サイト全体+チーム限定)
+    for body_text in DEMO_POSTS:
+        db.add(
+            Post(
+                user_id=random.choice(demo_users).id,
+                body=body_text,
+                created_at=now - timedelta(days=random.randint(0, 10), hours=random.randint(0, 12)),
+            )
+        )
+    db.add(Post(user_id=demo_users[0].id, team_id=teams[0].id, body="(チーム限定)今月の目標は「最後まで聴く」です"))
+
+    # イベント(今月の予定)
+    for i, title in enumerate(DEMO_EVENTS):
+        date = (now + timedelta(days=2 + i * 5)).date().isoformat()
+        db.add(Event(user_id=random.choice(demo_users).id, title=title, date=date))
+
+    # ルームとお知らせ
+    db.add(
+        Room(
+            site_id=sid,
+            creator_id=demo_users[0].id,
+            name="デモ_雑談ルーム",
+            topic="最近うれしかったこと",
+        )
+    )
+    db.add(
+        Announcement(
+            site_id=sid,
+            title="【デモ】サンプルのお知らせ",
+            body="これはデモデータです。システム管理画面の「デモデータを削除」でまとめて削除できます。",
+        )
+    )
+
+    audit(db, admin, "demo_create", f"ユーザー{len(demo_users)}件・セッション{session_count}件")
+    db.commit()
+    return {
+        "ok": True,
+        "users": len(demo_users),
+        "teams": len(teams),
+        "sessions": session_count,
+        "posts": len(DEMO_POSTS) + 1,
+        "events": len(DEMO_EVENTS),
+        "rooms": 1,
+    }
+
+
+@app.delete("/api/sysadmin/demo-data")
+def delete_demo_data(
+    admin: User = Depends(system_admin_user), db: Session = Depends(get_db)
+):
+    """生成したデモデータをまとめて削除する"""
+    from sqlalchemy import or_
+
+    sid = admin.site_id
+    demo_users = (
+        db.query(User)
+        .filter(User.site_id == sid, User.username.startswith(DEMO_USER_PREFIX, autoescape=True))
+        .all()
+    )
+    user_ids = [u.id for u in demo_users]
+    if user_ids:
+        db.query(Survey).filter(Survey.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(CallPair).filter(
+            or_(CallPair.user_a.in_(user_ids), CallPair.user_b.in_(user_ids))
+        ).delete(synchronize_session=False)
+        db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(Block).filter(
+            or_(Block.user_id.in_(user_ids), Block.blocked_id.in_(user_ids))
+        ).delete(synchronize_session=False)
+        db.query(Warning).filter(Warning.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(Report).filter(
+            or_(Report.reporter_id.in_(user_ids), Report.reported_id.in_(user_ids))
+        ).delete(synchronize_session=False)
+        db.query(RoomManager).filter(RoomManager.user_id.in_(user_ids)).delete(synchronize_session=False)
+
+    # デモのチーム・ルーム・お知らせ(名前のプレフィックスで判定)
+    demo_teams = db.query(Team).filter(
+        Team.site_id == sid, Team.name.startswith("デモ_", autoescape=True)
+    ).all()
+    for team in demo_teams:
+        db.query(TeamMember).filter(TeamMember.team_id == team.id).delete(synchronize_session=False)
+        db.query(Post).filter(Post.team_id == team.id).delete(synchronize_session=False)
+        db.query(Event).filter(Event.team_id == team.id).delete(synchronize_session=False)
+        db.delete(team)
+    demo_rooms = db.query(Room).filter(
+        Room.site_id == sid, Room.name.startswith("デモ_", autoescape=True)
+    ).all()
+    for room in demo_rooms:
+        db.query(RoomManager).filter(RoomManager.room_id == room.id).delete(synchronize_session=False)
+        db.query(Event).filter(Event.room_id == room.id).update({"room_id": None})
+        db.delete(room)
+    db.query(Announcement).filter(
+        Announcement.site_id == sid, Announcement.title.startswith("【デモ】", autoescape=True)
+    ).delete(synchronize_session=False)
+    if user_ids:
+        db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+
+    audit(db, admin, "demo_delete", f"ユーザー{len(user_ids)}件ほか")
+    db.commit()
+    return {"ok": True, "users": len(user_ids), "teams": len(demo_teams), "rooms": len(demo_rooms)}
+
+
 # --- WebSocket(マッチング+シグナリング) -------------------------------------
 
 

@@ -3003,6 +3003,33 @@ async function loadSysSites() {
   });
 }
 
+// --- デモデータ(本番運用では削除する) ---
+$("btn-demo-create").onclick = async () => {
+  if (!confirm("デモ用のユーザー・チーム・履歴などをメインサイトに生成します。よろしいですか？")) return;
+  $("demo-msg").textContent = "生成中…";
+  try {
+    const r = await api("/api/sysadmin/demo-data", "POST");
+    $("demo-msg").textContent =
+      `生成しました: ユーザー${r.users}名 / チーム${r.teams}件 / セッション${r.sessions}回 / ` +
+      `投稿${r.posts}件 / イベント${r.events}件 / ルーム${r.rooms}件`;
+    await loadSysSites();
+  } catch (err) {
+    $("demo-msg").textContent = err.message;
+  }
+};
+
+$("btn-demo-delete").onclick = async () => {
+  if (!confirm("生成したデモデータ(demo_ユーザー・デモ_チームなど)をすべて削除します。よろしいですか？")) return;
+  $("demo-msg").textContent = "削除中…";
+  try {
+    const r = await api("/api/sysadmin/demo-data", "DELETE");
+    $("demo-msg").textContent = `削除しました: ユーザー${r.users}名 / チーム${r.teams}件 / ルーム${r.rooms}件`;
+    await loadSysSites();
+  } catch (err) {
+    $("demo-msg").textContent = err.message;
+  }
+};
+
 $("sys-site-form").onsubmit = async (e) => {
   e.preventDefault();
   $("sysadmin-error").textContent = "";

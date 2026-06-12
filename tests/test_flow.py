@@ -993,6 +993,47 @@ async def test_trust_safety(users, admin_headers):
     requests.delete(f"{BASE}/api/admin/teams/{t['id']}", headers=admin_headers)
 
 
+def test_demo_data(users, admin_headers):
+    print("[17] デモデータ生成・削除")
+    user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
+
+    # 一般ユーザーは生成不可
+    r = requests.post(f"{BASE}/api/sysadmin/demo-data", headers=user_headers)
+    check("一般ユーザーは生成不可", r.status_code == 403, r.text)
+
+    # 生成
+    r = requests.post(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
+    check("デモデータ生成", r.status_code == 201, r.text)
+    counts = r.json()
+    check("生成件数が返る",
+          counts["users"] == 12 and counts["teams"] == 3 and counts["sessions"] >= 30, counts)
+    r = requests.post(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
+    check("二重生成は409", r.status_code == 409, r.text)
+
+    # 各データが見える
+    r = requests.get(f"{BASE}/api/admin/users", headers=admin_headers)
+    demo_users = [u for u in r.json() if u["username"].startswith("デモ_")]
+    check("デモユーザーが一覧に出る", len(demo_users) == 12, len(demo_users))
+    check("モデレータも含まれる", any(u["role"] == "moderator" for u in demo_users), demo_users[:3])
+    r = requests.get(f"{BASE}/api/admin/teams", headers=admin_headers)
+    check("デモチームが作られる",
+          sum(1 for t in r.json() if t["name"].startswith("デモ_")) == 3, r.text)
+    r = requests.get(f"{BASE}/api/admin/report", headers=admin_headers)
+    check("セッション履歴がレポートに反映される", r.json()["total_sessions"] >= 60, r.json()["total_sessions"])
+    r = requests.post(f"{BASE}/api/login", json={"username": "デモ_さくら", "password": "demo1234"})
+    check("デモユーザーでログインできる", r.status_code == 200, r.text)
+
+    # 削除
+    r = requests.delete(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
+    check("デモデータ削除", r.status_code == 200 and r.json()["users"] == 12, r.text)
+    r = requests.get(f"{BASE}/api/admin/users", headers=admin_headers)
+    check("デモユーザーが消える",
+          not any(u["username"].startswith("デモ_") for u in r.json()), r.text)
+    r = requests.get(f"{BASE}/api/admin/teams", headers=admin_headers)
+    check("デモチームが消える",
+          not any(t["name"].startswith("デモ_") for t in r.json()), r.text)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -1010,6 +1051,7 @@ async def main():
     test_user_admin_extras(users, admin_headers)
     await test_call_experience(users, admin_headers)
     await test_trust_safety(users, admin_headers)  # ブロックを作るため最後に実行
+    test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
