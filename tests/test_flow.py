@@ -1023,15 +1023,35 @@ def test_demo_data(users, admin_headers):
     r = requests.post(f"{BASE}/api/login", json={"username": "デモ_さくら", "password": "demo1234"})
     check("デモユーザーでログインできる", r.status_code == 200, r.text)
 
+    # サブサイトも生成される
+    check("サブサイト情報が返る",
+          counts.get("subsite") == "demo-corp" and counts.get("subsite_users", 0) >= 7, counts)
+    r = requests.get(f"{BASE}/api/sysadmin/sites", headers=admin_headers)
+    demo_site = next((s for s in r.json() if s["slug"] == "demo-corp"), None)
+    check("デモサブサイトがサイト一覧に出る",
+          demo_site is not None and demo_site["users"] >= 7, r.text)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": "demo-corp_admin", "password": "password@demo-corp",
+                            "site": "demo-corp"})
+    check("デモサブサイト管理者でログインできる(変更強制なし)",
+          r.status_code == 200 and not r.json()["must_change_password"], r.text)
+    sub_h = {"Authorization": f"Bearer {r.json()['token']}"}
+    r = requests.get(f"{BASE}/api/admin/report", headers=sub_h)
+    check("サブサイトに履歴が生成される", r.json()["total_sessions"] >= 20, r.json())
+
     # 削除
     r = requests.delete(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
-    check("デモデータ削除", r.status_code == 200 and r.json()["users"] == 12, r.text)
+    check("デモデータ削除", r.status_code == 200 and r.json()["users"] == 12
+          and r.json()["subsite"] == "demo-corp", r.text)
     r = requests.get(f"{BASE}/api/admin/users", headers=admin_headers)
     check("デモユーザーが消える",
           not any(u["username"].startswith("デモ_") for u in r.json()), r.text)
     r = requests.get(f"{BASE}/api/admin/teams", headers=admin_headers)
     check("デモチームが消える",
           not any(t["name"].startswith("デモ_") for t in r.json()), r.text)
+    r = requests.get(f"{BASE}/api/sysadmin/sites", headers=admin_headers)
+    check("デモサブサイトが消える",
+          not any(s["slug"] == "demo-corp" for s in r.json()), r.text)
 
 
 async def main():

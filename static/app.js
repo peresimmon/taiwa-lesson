@@ -1808,23 +1808,37 @@ async function loadRooms() {
     '<option value="">ルーム連携なし</option>' +
     myRooms.map((r) => `<option value="${r.id}">🎥${escapeHtml(r.name)}</option>`).join("");
   evSel.value = myRooms.some((r) => String(r.id) === cur) ? cur : "";
+  // カード表示。カードをタップするとマッチング待機へ
   $("room-list").innerHTML = myRooms.length
     ? myRooms
         .map(
-          (r) => `<li>
-            <span>${escapeHtml(r.name)}${r.has_passphrase ? " 🔒" : ""}${r.team_name ? ` <span class="role-tag listener">${escapeHtml(r.team_name)}</span>` : ""}</span>
-            <span class="e-user">${r.participants}${r.capacity ? "/" + r.capacity : ""}人
-              <button class="btn-text" data-join="${r.id}">参加</button>
-              ${r.can_manage ? `<button class="btn-text" data-redit="${r.id}">編集</button>
-              <button class="btn-text danger" data-rdelete="${r.id}" data-name="${escapeHtml(r.name)}">削除</button>` : ""}
-            </span>
-          </li>`
+          (r) => `<div class="room-card" data-join="${r.id}">
+            <div class="room-card-head">
+              <strong>${escapeHtml(r.name)}</strong>
+              ${r.has_passphrase ? "🔒" : ""}
+              ${r.team_name ? `<span class="role-tag listener">${escapeHtml(r.team_name)}</span>` : ""}
+            </div>
+            ${r.topic ? `<div class="room-card-topic">💬 ${escapeHtml(r.topic)}</div>` : ""}
+            <div class="room-card-meta">
+              ${r.participants}${r.capacity ? "/" + r.capacity : ""}人参加中 ・ ${r.session_minutes}分
+              ${r.role_matching ? " ・ 話し手×聞き手" : ""}
+            </div>
+            <div class="room-card-join">タップして参加 →</div>
+            ${r.can_manage ? `<div class="room-card-actions">
+              <button class="btn-text" data-redit="${r.id}">編集</button>
+              <button class="btn-text danger" data-rdelete="${r.id}" data-name="${escapeHtml(r.name)}">削除</button>
+            </div>` : ""}
+          </div>`
         )
         .join("")
-    : '<li class="empty-note">ルームはまだありません</li>';
+    : '<p class="empty-note">ルームはまだありません</p>';
 
-  $("room-list").querySelectorAll("[data-join]").forEach((btn) => {
-    btn.onclick = () => joinRoom(parseInt(btn.dataset.join, 10));
+  $("room-list").querySelectorAll(".room-card").forEach((card) => {
+    card.onclick = (e) => {
+      // 編集・削除ボタンのクリックでは参加しない
+      if (e.target.closest("[data-redit],[data-rdelete]")) return;
+      joinRoom(parseInt(card.dataset.join, 10));
+    };
   });
   $("room-list").querySelectorAll("[data-redit]").forEach((btn) => {
     btn.onclick = () => openRoomForm(myRooms.find((r) => r.id === parseInt(btn.dataset.redit, 10)));
@@ -2285,13 +2299,14 @@ $("btn-export-users").onclick = async () => {
   }
 };
 
+/* ユーザーのセッション履歴をモーダルで表示する */
 async function loadAdminHistory(userId, name) {
   $("admin-error").textContent = "";
   try {
     const data = await api(`/api/admin/users/${userId}/surveys`);
-    $("admin-history-user").textContent = `: ${name}`;
-    $("admin-history-list").innerHTML = data.surveys.length
-      ? data.surveys
+    const listHtml = data.surveys.length
+      ? '<ul class="history-list">' +
+        data.surveys
           .map(
             (s) => `<li>
               <span class="h-stars">${"★".repeat(s.rating)}${"☆".repeat(5 - s.rating)}</span>
@@ -2299,8 +2314,12 @@ async function loadAdminHistory(userId, name) {
               <span class="h-date">${parseUTC(s.created_at).toLocaleDateString("ja-JP")}</span>
             </li>`
           )
-          .join("")
-      : '<li class="empty-note">このユーザーのセッション履歴はありません</li>';
+          .join("") +
+        "</ul>"
+      : '<p class="empty-note">このユーザーのセッション履歴はありません</p>';
+    openModal(`セッション履歴: ${name}`, listHtml, [
+      { label: "閉じる", primary: true, onClick: closeModal },
+    ]);
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
@@ -2719,6 +2738,18 @@ function closeModal() {
   $("modal").classList.add("hidden");
 }
 
+// すべてのモーダルは背景(灰色の部分)のクリックでも閉じられる
+document.querySelectorAll(".overlay").forEach((overlay) => {
+  overlay.addEventListener("click", (e) => {
+    if (e.target !== overlay) return; // ボックス内のクリックは無視
+    if (overlay.id === "device-overlay") {
+      stopDeviceTest(true); // テスト中のカメラ・マイクも停止する
+    } else {
+      overlay.classList.add("hidden");
+    }
+  });
+});
+
 // ---- 警告ポップアップ(ログイン時) -------------------------------------------------
 async function checkWarnings() {
   try {
@@ -3032,7 +3063,8 @@ $("btn-demo-create").onclick = async () => {
     const r = await api("/api/sysadmin/demo-data", "POST");
     $("demo-msg").textContent =
       `生成しました: ユーザー${r.users}名 / チーム${r.teams}件 / セッション${r.sessions}回 / ` +
-      `投稿${r.posts}件 / イベント${r.events}件 / ルーム${r.rooms}件`;
+      `投稿${r.posts}件 / イベント${r.events}件 / ルーム${r.rooms}件 / ` +
+      `サブサイト「${r.subsite}」(ユーザー${r.subsite_users}名・セッション${r.subsite_sessions}回)`;
     await loadSysSites();
   } catch (err) {
     $("demo-msg").textContent = err.message;

@@ -458,6 +458,40 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .event-room-select { float: none; max-width: 140px; flex: 0 0 auto; }
 
+/* ルームカード */
+.room-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.room-card {
+  border: 1.5px solid var(--border); border-radius: 14px;
+  padding: 14px 16px; cursor: pointer; background: var(--bg);
+  transition: all 0.15s; position: relative;
+}
+.room-card:hover {
+  border-color: var(--accent); transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(238, 108, 77, 0.18);
+}
+.room-card-head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 1rem; margin-bottom: 6px;
+}
+.room-card-head strong { color: var(--primary-dark); }
+.room-card-topic {
+  font-size: 0.85rem; color: var(--text); margin-bottom: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.room-card-meta { font-size: 0.78rem; color: var(--muted); }
+.room-card-join {
+  margin-top: 10px; font-size: 0.85rem; font-weight: 700; color: var(--accent);
+}
+.room-card-actions {
+  position: absolute; top: 10px; right: 12px; display: flex; gap: 4px;
+}
+.room-card-actions .btn-text { font-size: 0.75rem; }
+
 /* CSV一括登録 */
 .csv-box { margin-bottom: 12px; font-size: 0.85rem; }
 .csv-box summary { cursor: pointer; color: var(--primary); font-weight: 600; }

@@ -1967,20 +1967,37 @@ def sysadmin_delete_site(
         raise HTTPException(status_code=404, detail="サイトが存在しません")
     if site.is_main:
         raise HTTPException(status_code=400, detail="メインサイトは削除できません")
+    _delete_site_data(db, site)
+    audit(db, admin, "site_delete", site.slug)
+    db.commit()
+    return {"ok": True}
+
+
+def _delete_site_data(db: Session, site: Site) -> None:
+    """サイトと所属ユーザー・関連データをすべて削除する(commitは呼び出し側)"""
+    from sqlalchemy import or_
+
+    site_id = site.id
     user_ids = [u.id for u in db.query(User).filter(User.site_id == site_id).all()]
     if user_ids:
         db.query(Survey).filter(Survey.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(Block).filter(
+            or_(Block.user_id.in_(user_ids), Block.blocked_id.in_(user_ids))
+        ).delete(synchronize_session=False)
+        db.query(RoomManager).filter(RoomManager.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+    db.query(CallPair).filter(CallPair.site_id == site_id).delete(synchronize_session=False)
+    db.query(Report).filter(Report.site_id == site_id).delete(synchronize_session=False)
+    db.query(Warning).filter(Warning.site_id == site_id).delete(synchronize_session=False)
+    db.query(Room).filter(Room.site_id == site_id).delete(synchronize_session=False)
     db.query(Team).filter(Team.site_id == site_id).delete(synchronize_session=False)
     db.query(Announcement).filter(Announcement.site_id == site_id).delete(synchronize_session=False)
+    db.query(AuditLog).filter(AuditLog.site_id == site_id).delete(synchronize_session=False)
     db.query(Setting).filter(Setting.site_id == site_id).delete(synchronize_session=False)
     db.delete(site)
-    audit(db, admin, "site_delete", site.slug)
-    db.commit()
-    return {"ok": True}
 
 
 @app.get("/api/sysadmin/sites/{site_id}/users")
@@ -2008,6 +2025,8 @@ def sysadmin_site_settings(
 # --- デモデータ(本番運用では削除する → docs/TODO.md) ------------------------------
 
 DEMO_USER_PREFIX = "デモ_"  # 既存ユーザーと衝突しない識別子(削除時の目印にもなる)
+DEMO_SITE_SLUG = "demo-corp"  # デモ用サブサイトのサイトID
+DEMO_SUB_NAMES = ["こうじ", "みさき", "しゅん", "なな", "だいち", "りん"]
 DEMO_NAMES = [
     "さくら", "たろう", "ひかり", "けんた", "ゆい", "そうた",
     "あおい", "りく", "めい", "はると", "ことは", "ゆうま",
@@ -2044,6 +2063,7 @@ def create_demo_data(
         db.query(User)
         .filter(User.site_id == sid, User.username.startswith(DEMO_USER_PREFIX, autoescape=True))
         .first()
+        or db.query(Site).filter(Site.slug == DEMO_SITE_SLUG).first()
     ):
         raise HTTPException(status_code=409, detail="デモデータは既に存在します。先に削除してください")
 
@@ -2131,7 +2151,59 @@ def create_demo_data(
         )
     )
 
-    audit(db, admin, "demo_create", f"ユーザー{len(demo_users)}件・セッション{session_count}件")
+    # --- デモ用サブサイト(企業向けの見本) ---
+    sub_site = Site(slug=DEMO_SITE_SLUG, name="デモ株式会社")
+    db.add(sub_site)
+    db.flush()
+    sub_admin, _ = create_site_admin(db, sub_site)
+    sub_admin.must_change_password = False  # デモなのでそのままログイン可能にする
+    # 社内ツールらしい設定(実名表示・実映像あり)
+    set_setting(db, sub_site.id, "anonymous_mode", "false")
+    set_setting(db, sub_site.id, "mode_camera", "true")
+    sub_users: list[User] = []
+    for i, name in enumerate(DEMO_SUB_NAMES):
+        u = User(
+            site_id=sub_site.id,
+            username=f"{DEMO_USER_PREFIX}{name}",
+            password_hash=pw_hash,
+            role="moderator" if i == 0 else "user",
+            created_at=now - timedelta(days=random.randint(3, 20)),
+        )
+        db.add(u)
+        sub_users.append(u)
+    db.flush()
+    sub_team = Team(site_id=sub_site.id, name="デモ_総務チーム")
+    db.add(sub_team)
+    db.flush()
+    for j, m in enumerate(sub_users[:4]):
+        db.add(TeamMember(team_id=sub_team.id, user_id=m.id, is_leader=(j == 0)))
+    sub_sessions = 10
+    for _ in range(sub_sessions):
+        a, b = random.sample(sub_users, 2)
+        when = now - timedelta(days=random.randint(0, 13), hours=random.randint(0, 12))
+        call_id = "demo" + secrets.token_hex(14)
+        db.add(CallPair(call_id=call_id, site_id=sub_site.id, user_a=a.id, user_b=b.id, created_at=when))
+        for u in (a, b):
+            db.add(
+                Survey(
+                    user_id=u.id, room_id=call_id, rating=random.randint(3, 5),
+                    talk_again=random.random() < 0.5,
+                    comment=random.choice(DEMO_COMMENTS), created_at=when,
+                )
+            )
+    db.add(Post(user_id=sub_users[0].id, body="社内の1on1代わりに使ってみています"))
+    db.add(Event(user_id=sub_users[0].id, title="部署横断 雑談会",
+                 date=(now + timedelta(days=4)).date().isoformat()))
+    db.add(
+        Announcement(
+            site_id=sub_site.id,
+            title="【デモ】デモ株式会社のサイトです",
+            body="サブサイトのデモです。実名表示・実映像ありの社内向け設定になっています。",
+        )
+    )
+
+    audit(db, admin, "demo_create",
+          f"ユーザー{len(demo_users)}件・セッション{session_count}件・サブサイト{DEMO_SITE_SLUG}")
     db.commit()
     return {
         "ok": True,
@@ -2141,6 +2213,9 @@ def create_demo_data(
         "posts": len(DEMO_POSTS) + 1,
         "events": len(DEMO_EVENTS),
         "rooms": 1,
+        "subsite": DEMO_SITE_SLUG,
+        "subsite_users": len(sub_users) + 1,  # サイト管理者を含む
+        "subsite_sessions": sub_sessions,
     }
 
 
@@ -2197,9 +2272,20 @@ def delete_demo_data(
     if user_ids:
         db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
 
+    # デモ用サブサイトを丸ごと削除
+    sub_site = db.query(Site).filter(Site.slug == DEMO_SITE_SLUG).first()
+    if sub_site:
+        _delete_site_data(db, sub_site)
+
     audit(db, admin, "demo_delete", f"ユーザー{len(user_ids)}件ほか")
     db.commit()
-    return {"ok": True, "users": len(user_ids), "teams": len(demo_teams), "rooms": len(demo_rooms)}
+    return {
+        "ok": True,
+        "users": len(user_ids),
+        "teams": len(demo_teams),
+        "rooms": len(demo_rooms),
+        "subsite": DEMO_SITE_SLUG if sub_site else None,
+    }
 
 
 # --- WebSocket(マッチング+シグナリング) -------------------------------------
