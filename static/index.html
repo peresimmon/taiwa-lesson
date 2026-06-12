@@ -365,10 +365,18 @@
     <section id="screen-admin" class="screen hidden">
       <div class="panel admin-bar">
         <h2>管理画面</h2>
+        <nav class="admin-nav">
+          <button type="button" class="admin-tab active" data-page="users">ユーザー</button>
+          <button type="button" class="admin-tab" data-page="settings">サイト設定</button>
+          <button type="button" class="admin-tab" data-page="logs">レポート・ログ</button>
+          <button type="button" class="admin-tab" data-page="content">チーム・お知らせ</button>
+        </nav>
         <button id="btn-admin-back" class="btn-secondary">ホームへ戻る</button>
       </div>
-      <div class="dash-grid">
-        <div class="panel">
+
+      <!-- ページ1: ユーザー管理(横幅いっぱい) -->
+      <div class="admin-page" id="admin-page-users">
+        <div class="panel panel-wide">
           <h3>ユーザー一覧</h3>
           <form id="admin-user-form" class="inline-form">
             <input type="text" id="new-user-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
@@ -378,7 +386,7 @@
           </form>
           <details class="csv-box">
             <summary>CSV一括登録</summary>
-            <p class="note">1行に「ユーザー名,初期パスワード」。パスワード省略時は自動生成され、結果に一度だけ表示されます。</p>
+            <p class="note">1行に「ユーザー名,初期パスワード,メール(任意)」。パスワード省略時は自動生成され、結果に一度だけ表示されます。</p>
             <textarea id="bulk-csv" rows="4" placeholder="taro,pass123&#10;hanako"></textarea>
             <button type="button" id="btn-bulk-users" class="btn-small">一括登録</button>
             <div id="bulk-result" class="bulk-result"></div>
@@ -393,88 +401,114 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel panel-wide">
           <h3>セッション履歴<span id="admin-history-user" class="admin-history-user"></span></h3>
           <ul id="admin-history-list" class="history-list">
             <li class="empty-note">ユーザー一覧の「履歴」を押すと表示されます</li>
           </ul>
         </div>
+      </div>
 
-        <div class="panel">
-          <h3>サイト設定</h3>
-          <form id="admin-settings-form">
-            <label>サイト名（ヘッダーに表示されます）
-              <input type="text" id="set-site-name" maxlength="100">
-            </label>
-            <label>キャッチコピー（ダッシュボードに表示。空欄でデフォルト）
-              <input type="text" id="set-tagline" maxlength="200">
-            </label>
-            <label>セッション時間（分）
-              <input type="number" id="set-minutes" min="1" max="60" required>
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-registration"> 新規ユーザー登録を許可する（メインサイトのみ有効）
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-role-matching"> 「話し手」「聞き手」に分かれてマッチングする
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-anonymous"> 匿名コミュニケーション（呼び名をランダムに割り当て）
-            </label>
-            <div class="setting-group">
-              <div class="setting-group-title">通話画面で利用できる表示モード</div>
-              <label class="checkbox-label"><input type="checkbox" id="set-mode-toon"> デフォルメモードアバター</label>
-              <label class="checkbox-label"><input type="checkbox" id="set-mode-real"> リアルモードアバター</label>
-              <label class="checkbox-label"><input type="checkbox" id="set-mode-still"> 静止画</label>
-              <label class="checkbox-label"><input type="checkbox" id="set-mode-camera"> 実映像（カメラそのまま）</label>
-            </div>
-            <div class="setting-group">
-              <div class="setting-group-title">通話機能の利用可否</div>
-              <label class="checkbox-label"><input type="checkbox" id="set-feat-mute"> ミュート</label>
-              <label class="checkbox-label"><input type="checkbox" id="set-feat-cam"> 映像オフ</label>
-              <label class="checkbox-label"><input type="checkbox" id="set-feat-share"> 画面共有</label>
-              <label class="checkbox-label"><input type="checkbox" id="set-feat-chat"> セッション内チャット</label>
-            </div>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-role-swap"> 役割交代つきセッション（時間終了時にもう1回）
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-rematch"> 「また話したい」同士の再マッチ優先
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-rooms"> ルーム作成機能を有効にする
-            </label>
-            <div class="setting-group">
-              <div class="setting-group-title">ロビー通話（役割なし）の話題カード</div>
-              <label>表示モード
-                <select id="set-topic-mode">
-                  <option value="none">なし</option>
-                  <option value="random">ランダム表示</option>
-                  <option value="fixed">任意設定</option>
-                </select>
+      <!-- ページ2: サイト設定(セクション別) -->
+      <div class="admin-page hidden" id="admin-page-settings">
+        <form id="admin-settings-form">
+          <div class="dash-grid">
+            <div class="panel">
+              <h3>サイト全体の設定</h3>
+              <label>サイト名（ヘッダーに表示されます）
+                <input type="text" id="set-site-name" maxlength="100">
               </label>
-              <label>任意設定の話題
-                <input type="text" id="set-topic-text" maxlength="200">
+              <label>キャッチコピー（ダッシュボードに表示。空欄でデフォルト）
+                <input type="text" id="set-tagline" maxlength="200">
               </label>
-              <label>ランダム用の独自アセット（1行1話題。空欄で内蔵アセットを使用）
-                <textarea id="set-topic-pool" rows="3"></textarea>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-registration"> 新規ユーザー登録を許可する（メインサイトのみ有効）
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-rooms"> ルーム作成機能を有効にする
               </label>
             </div>
-            <label class="checkbox-label">
-              <input type="checkbox" id="set-survey"> セッション後のアンケートを行う
-            </label>
-            <label>アンケートの設問
-              <input type="text" id="set-survey-question" maxlength="300">
-            </label>
-            <label>複数設問（1行1問。空欄なら上の単一設問を使用）
-              <textarea id="set-survey-questions" rows="3"></textarea>
-            </label>
-            <button type="submit" class="btn-small">設定を保存</button>
+
+            <div class="panel">
+              <h3>マッチングの設定</h3>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-role-matching"> 「話し手」「聞き手」に分かれてマッチングする
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-anonymous"> 匿名コミュニケーション（呼び名をランダムに割り当て）
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-rematch"> 「また話したい」同士の再マッチ優先
+              </label>
+            </div>
+
+            <div class="panel">
+              <h3>通話の設定</h3>
+              <label>セッション時間（分）
+                <input type="number" id="set-minutes" min="1" max="60" required>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-role-swap"> 役割交代つきセッション（時間終了時にもう1回）
+              </label>
+              <div class="setting-group">
+                <div class="setting-group-title">通話機能の利用可否</div>
+                <label class="checkbox-label"><input type="checkbox" id="set-feat-mute"> ミュート</label>
+                <label class="checkbox-label"><input type="checkbox" id="set-feat-cam"> 映像オフ</label>
+                <label class="checkbox-label"><input type="checkbox" id="set-feat-share"> 画面共有</label>
+                <label class="checkbox-label"><input type="checkbox" id="set-feat-chat"> セッション内チャット</label>
+              </div>
+            </div>
+
+            <div class="panel">
+              <h3>通話前に使用する設定</h3>
+              <div class="setting-group">
+                <div class="setting-group-title">通話画面で利用できる表示モード</div>
+                <label class="checkbox-label"><input type="checkbox" id="set-mode-toon"> デフォルメモードアバター</label>
+                <label class="checkbox-label"><input type="checkbox" id="set-mode-real"> リアルモードアバター</label>
+                <label class="checkbox-label"><input type="checkbox" id="set-mode-still"> 静止画</label>
+                <label class="checkbox-label"><input type="checkbox" id="set-mode-camera"> 実映像（カメラそのまま）</label>
+              </div>
+              <div class="setting-group">
+                <div class="setting-group-title">ロビー通話（役割なし）の話題カード</div>
+                <label>表示モード
+                  <select id="set-topic-mode">
+                    <option value="none">なし</option>
+                    <option value="random">ランダム表示</option>
+                    <option value="fixed">任意設定</option>
+                  </select>
+                </label>
+                <label>任意設定の話題
+                  <input type="text" id="set-topic-text" maxlength="200">
+                </label>
+                <label>ランダム用の独自アセット（1行1話題。空欄で内蔵アセットを使用）
+                  <textarea id="set-topic-pool" rows="3"></textarea>
+                </label>
+              </div>
+            </div>
+
+            <div class="panel">
+              <h3>アンケートの設定</h3>
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-survey"> セッション後のアンケートを行う
+              </label>
+              <label>アンケートの設問
+                <input type="text" id="set-survey-question" maxlength="300">
+              </label>
+              <label>複数設問（1行1問。空欄なら上の単一設問を使用）
+                <textarea id="set-survey-questions" rows="3"></textarea>
+              </label>
+            </div>
+          </div>
+          <div class="panel panel-wide settings-save">
+            <button type="submit" class="btn-primary">設定を保存</button>
             <p id="admin-settings-msg" class="note"></p>
-          </form>
-        </div>
+          </div>
+        </form>
+      </div>
 
-        <div class="panel">
+      <!-- ページ3: レポート・ログ -->
+      <div class="admin-page hidden" id="admin-page-logs">
+        <div class="panel panel-wide">
           <h3>通報</h3>
           <div class="admin-table-wrap">
             <table class="admin-table">
@@ -485,57 +519,63 @@
             </table>
           </div>
         </div>
-
-        <div class="panel">
-          <h3>利用レポート <button type="button" id="btn-export-csv" class="btn-small" style="float:right">CSVエクスポート</button></h3>
-          <div id="report-numbers" class="stats report-stats"></div>
-          <div class="setting-group-title" style="margin-top:14px">直近14日のセッション数</div>
-          <div id="report-chart" class="report-chart"></div>
-          <div class="setting-group-title">チーム別</div>
-          <div class="admin-table-wrap">
-            <table class="admin-table">
-              <thead><tr><th>チーム</th><th>人数</th><th>セッション</th></tr></thead>
-              <tbody id="report-teams"></tbody>
-            </table>
+        <div class="dash-grid">
+          <div class="panel">
+            <h3>利用レポート <button type="button" id="btn-export-csv" class="btn-small" style="float:right">CSVエクスポート</button></h3>
+            <div id="report-numbers" class="stats report-stats"></div>
+            <div class="setting-group-title" style="margin-top:14px">直近14日のセッション数</div>
+            <div id="report-chart" class="report-chart"></div>
+            <div class="setting-group-title">チーム別</div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead><tr><th>チーム</th><th>人数</th><th>セッション</th></tr></thead>
+                <tbody id="report-teams"></tbody>
+              </table>
+            </div>
           </div>
-        </div>
-
-        <div class="panel">
-          <h3>監査ログ</h3>
-          <ul id="audit-list" class="announcement-list audit-list"></ul>
-        </div>
-
-        <div class="panel">
-          <h3>チーム管理</h3>
-          <form id="admin-team-form" class="inline-form">
-            <input type="text" id="new-team-name" placeholder="チーム名" required maxlength="100">
-            <button type="submit" class="btn-small">チーム作成</button>
-          </form>
-          <ul id="admin-team-list" class="event-list"></ul>
-          <div id="admin-team-detail" class="hidden">
-            <div class="team-detail-head"><strong id="admin-team-title"></strong></div>
-            <form id="admin-team-member-form" class="inline-form">
-              <input type="text" id="team-member-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
-              <button type="submit" class="btn-small">メンバー追加</button>
-            </form>
-            <ul id="admin-team-members" class="history-list"></ul>
+          <div class="panel">
+            <h3>監査ログ</h3>
+            <ul id="audit-list" class="announcement-list audit-list"></ul>
           </div>
-        </div>
-
-        <div class="panel">
-          <h3>お知らせ管理</h3>
-          <form id="admin-announce-form">
-            <label>タイトル
-              <input type="text" id="ann-title" required maxlength="200">
-            </label>
-            <label>本文
-              <textarea id="ann-body" rows="2" required maxlength="2000"></textarea>
-            </label>
-            <button type="submit" class="btn-small">お知らせを投稿</button>
-          </form>
-          <ul id="admin-announce-list" class="announcement-list"></ul>
         </div>
       </div>
+
+      <!-- ページ4: チーム・お知らせ -->
+      <div class="admin-page hidden" id="admin-page-content">
+        <div class="dash-grid">
+          <div class="panel">
+            <h3>チーム管理</h3>
+            <form id="admin-team-form" class="inline-form">
+              <input type="text" id="new-team-name" placeholder="チーム名" required maxlength="100">
+              <button type="submit" class="btn-small">チーム作成</button>
+            </form>
+            <ul id="admin-team-list" class="event-list"></ul>
+            <div id="admin-team-detail" class="hidden">
+              <div class="team-detail-head"><strong id="admin-team-title"></strong></div>
+              <form id="admin-team-member-form" class="inline-form">
+                <input type="text" id="team-member-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
+                <button type="submit" class="btn-small">メンバー追加</button>
+              </form>
+              <ul id="admin-team-members" class="history-list"></ul>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>お知らせ管理</h3>
+            <form id="admin-announce-form">
+              <label>タイトル
+                <input type="text" id="ann-title" required maxlength="200">
+              </label>
+              <label>本文
+                <textarea id="ann-body" rows="2" required maxlength="2000"></textarea>
+              </label>
+              <button type="submit" class="btn-small">お知らせを投稿</button>
+            </form>
+            <ul id="admin-announce-list" class="announcement-list"></ul>
+          </div>
+        </div>
+      </div>
+
       <p id="admin-error" class="error"></p>
     </section>
 

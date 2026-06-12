@@ -364,10 +364,32 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* ===== 管理画面 ===== */
 .admin-bar {
   display: flex; justify-content: space-between; align-items: center;
+  gap: 14px; flex-wrap: wrap;
   margin-bottom: 20px;
 }
 .admin-bar h2 { margin: 0; color: var(--primary); }
 .admin-bar .btn-secondary { padding: 9px 18px; font-size: 0.9rem; }
+
+/* 管理画面のページタブ */
+.admin-nav { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
+.admin-tab {
+  padding: 8px 18px; border: 1.5px solid var(--border); border-radius: 999px;
+  background: var(--card); color: var(--muted); font-size: 0.88rem;
+  cursor: pointer; transition: all 0.15s; font-family: inherit;
+}
+.admin-tab:hover { border-color: var(--primary); color: var(--primary); }
+.admin-tab.active {
+  background: var(--primary); border-color: var(--primary);
+  color: #fff; font-weight: 600;
+}
+
+/* 横幅いっぱいのパネル(ユーザー一覧・通報など) */
+.panel-wide { margin-bottom: 20px; }
+.settings-save {
+  display: flex; align-items: center; gap: 16px; margin-top: 20px;
+}
+.settings-save .btn-primary { width: auto; padding: 13px 40px; }
+.settings-save .note { margin: 0; }
 
 .admin-table-wrap { overflow-x: auto; }
 .admin-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }

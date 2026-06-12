@@ -2090,9 +2090,22 @@ setInterval(async () => {
 $("btn-admin").onclick = () => showAdmin();
 $("btn-admin-back").onclick = () => showLobby();
 
+/* 管理画面のページ切替(ユーザー / サイト設定 / レポート・ログ / チーム・お知らせ) */
+function showAdminPage(name) {
+  document.querySelectorAll(".admin-page").forEach((el) => el.classList.add("hidden"));
+  $(`admin-page-${name}`).classList.remove("hidden");
+  document.querySelectorAll(".admin-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.page === name);
+  });
+}
+document.querySelectorAll(".admin-tab").forEach((tab) => {
+  tab.onclick = () => showAdminPage(tab.dataset.page);
+});
+
 async function showAdmin() {
   $("admin-error").textContent = "";
   showScreen("admin");
+  showAdminPage("users");
   try {
     await Promise.all([
       loadAdminUsers(),
