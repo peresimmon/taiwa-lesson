@@ -760,6 +760,180 @@ def test_extras(users, admin_headers):
     requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
 
 
+async def test_call_experience(users, admin_headers):
+    print("[15] 役割交代・チャット・話題カード・複数設問・CSV")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+
+    # 話し手が設定した話題がcall_startで両者に届く + チャット中継 + 役割交代
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
+    await recv_type(ws1, "queued")
+    await ws2.send(json.dumps({"type": "join_queue", "role": "listener"}))
+    await recv_type(ws1, "matched")
+    await recv_type(ws2, "matched")
+    await ws1.send(json.dumps({"type": "consent", "accept": True, "topic": "てすとの話題"}))
+    await ws2.send(json.dumps({"type": "consent", "accept": True}))
+    c1 = await recv_type(ws1, "call_start")
+    c2 = await recv_type(ws2, "call_start")
+    check("話し手の話題が両者に届く", c1["topic"] == "てすとの話題" and c2["topic"] == "てすとの話題",
+          f"{c1} / {c2}")
+
+    await ws1.send(json.dumps({"type": "chat", "text": "こんにちは!"}))
+    chat = await recv_type(ws2, "chat")
+    check("チャットが中継される", chat["text"] == "こんにちは!" and chat["sender"], chat)
+
+    await ws1.send(json.dumps({"type": "swap_request"}))
+    offer = await recv_type(ws2, "swap_offer")
+    check("交代希望が相手に届く", offer["type"] == "swap_offer")
+    await ws2.send(json.dumps({"type": "swap_request"}))
+    s1 = await recv_type(ws1, "swap_start")
+    s2 = await recv_type(ws2, "swap_start")
+    check("役割が交代される",
+          s1["my_role"] == "listener" and s2["my_role"] == "speaker", f"{s1} / {s2}")
+    await ws1.send(json.dumps({"type": "leave"}))
+    await ws1.close()
+    await ws2.close()
+
+    # ロビー通話(役割なし)の話題: ランダム+独自アセット
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "role_matching": False,
+                           "lobby_topic_mode": "random", "topic_pool": "独自話題A"})
+    check("ロビー話題設定", r.status_code == 200, r.text)
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue"}))
+    await recv_type(ws1, "queued")
+    await ws2.send(json.dumps({"type": "join_queue"}))
+    await recv_type(ws1, "matched")
+    await recv_type(ws2, "matched")
+    await ws1.send(json.dumps({"type": "consent", "accept": True}))
+    await ws2.send(json.dumps({"type": "consent", "accept": True}))
+    c1 = await recv_type(ws1, "call_start")
+    check("ロビー話題が独自アセットから出る", c1["topic"] == "独自話題A", c1)
+    await ws1.send(json.dumps({"type": "leave"}))
+    await ws1.close()
+    await ws2.close()
+    requests.put(f"{BASE}/api/admin/settings", headers=admin_headers, json=DEFAULT_PUT)
+
+    # 複数設問アンケート
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "survey_questions": "設問その1\n設問その2"})
+    r = requests.get(f"{BASE}/api/config", headers=h0)
+    check("複数設問がconfigに出る", r.json()["survey_questions"] == ["設問その1", "設問その2"], r.text)
+    r = requests.post(f"{BASE}/api/surveys", headers=h0,
+                      json={"room_id": "multi-q-test", "rating": 4, "answers": [4, 5],
+                            "talk_again": False, "comment": ""})
+    check("複数設問の回答を送信", r.status_code == 201, r.text)
+    requests.put(f"{BASE}/api/admin/settings", headers=admin_headers, json=DEFAULT_PUT)
+
+    # CSVエクスポート
+    r = requests.get(f"{BASE}/api/admin/report/export", headers=admin_headers)
+    check("CSVエクスポート", r.status_code == 200 and "text/csv" in r.headers.get("content-type", "")
+          and "ユーザー名" in r.text and "設問その1" in r.text, r.headers)
+
+
+async def test_trust_safety(users, admin_headers):
+    print("[14→16] 通報・ブロック・警告・パスワードリセット")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}
+    suffix = secrets.token_hex(3)
+
+    # 通話ペアを作る(マッチで記録される)
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
+    await recv_type(ws1, "queued")
+    await ws2.send(json.dumps({"type": "join_queue", "role": "listener"}))
+    m1 = await recv_type(ws1, "matched")
+    await recv_type(ws2, "matched")
+    call_id = m1["room_id"]
+    await ws1.close()
+    await ws2.close()
+
+    # 通報: 参加者本人のみ。サイト管理者とチームリーダーが閲覧できる
+    r = requests.post(f"{BASE}/api/reports", json={"call_id": call_id, "reason": "テスト通報"},
+                      headers=h0)
+    check("通報を送信", r.status_code == 201, r.text)
+    r = requests.post(f"{BASE}/api/reports", json={"call_id": "unknown", "reason": "x"}, headers=h0)
+    check("無関係の通話IDは404", r.status_code == 404, r.text)
+    r = requests.get(f"{BASE}/api/reports", headers=admin_headers)
+    rep = next((x for x in r.json() if x["reason"] == "テスト通報"), None)
+    check("管理者が通報を確認できる",
+          rep is not None and rep["reported"] == users[1]["username"]
+          and rep["reporter"] == users[0]["username"], r.text)
+    r = requests.get(f"{BASE}/api/reports", headers=h1)
+    check("リーダーでない一般ユーザーは403", r.status_code == 403, r.text)
+    # チームリーダー(users[0])は対象(users[1])がチームメンバーなら閲覧できる
+    t = requests.post(f"{BASE}/api/admin/teams", headers=admin_headers,
+                      json={"name": f"TS_{suffix}"}).json()
+    requests.post(f"{BASE}/api/teams/{t['id']}/members", headers=admin_headers,
+                  json={"username": users[0]["username"], "is_leader": True})
+    requests.post(f"{BASE}/api/teams/{t['id']}/members", headers=admin_headers,
+                  json={"username": users[1]["username"]})
+    r = requests.get(f"{BASE}/api/reports", headers=h0)
+    check("チームリーダーが通報を確認できる",
+          any(x["reason"] == "テスト通報" for x in r.json()), r.text)
+    r = requests.put(f"{BASE}/api/reports/{rep['id']}", headers=admin_headers,
+                     json={"status": "resolved"})
+    check("通報を対応済みにできる", r.status_code == 200, r.text)
+
+    # 警告: リーダーが発令 → 対象のログイン時(pending)に出る → 確認で消える
+    uid1 = requests.get(f"{BASE}/api/me", headers=h1).json()["id"]
+    r = requests.post(f"{BASE}/api/warnings", headers=h0,
+                      json={"user_id": uid1, "message": "テスト警告です"})
+    check("リーダーが警告を発令", r.status_code == 201, r.text)
+    r = requests.post(f"{BASE}/api/warnings", headers=h1,
+                      json={"user_id": uid1, "message": "権限なし"})
+    check("権限のないユーザーは403", r.status_code == 403, r.text)
+    r = requests.get(f"{BASE}/api/warnings/pending", headers=h1)
+    w = r.json()
+    check("対象ユーザーに警告が届く", len(w) == 1 and w[0]["message"] == "テスト警告です", r.text)
+    r = requests.post(f"{BASE}/api/warnings/{w[0]['id']}/ack", headers=h1)
+    check("警告を確認できる", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/warnings/pending", headers=h1)
+    check("確認後は表示されない", r.json() == [], r.text)
+
+    # ブロック: 以後マッチしない
+    r = requests.post(f"{BASE}/api/blocks", json={"call_id": call_id}, headers=h0)
+    check("ブロックを登録", r.status_code == 201, r.text)
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
+    await recv_type(ws1, "queued")
+    await ws2.send(json.dumps({"type": "join_queue", "role": "listener"}))
+    q2 = await recv_type(ws2, "queued")
+    check("ブロック相手とはマッチせず待機になる", q2["role"] == "listener", q2)
+    try:
+        await recv_type(ws1, "matched", timeout=1.5)
+        check("ブロックが効いている", False)
+    except TimeoutError:
+        check("ブロックが効いている", True)
+    await ws1.close()
+    await ws2.close()
+
+    # パスワードリセット: モデレータが発行 → 対象は新パスワード+変更強制
+    uid0 = requests.get(f"{BASE}/api/me", headers=h0).json()["id"]
+    r = requests.post(f"{BASE}/api/admin/users/{uid1}/reset_password", headers=h0)
+    check("一般ユーザーはリセット不可", r.status_code == 403, r.text)
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers,
+                 json={"role": "moderator"})
+    r = requests.post(f"{BASE}/api/admin/users/{uid1}/reset_password", headers=h0)
+    check("モデレータがリセットできる", r.status_code == 200 and r.json()["password"], r.text)
+    new_pw = r.json()["password"]
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": users[1]["username"], "password": new_pw})
+    check("新パスワードでログイン(要変更)",
+          r.status_code == 200 and r.json()["must_change_password"], r.text)
+    # 後続のために元のパスワードへ戻す
+    hh = {"Authorization": f"Bearer {r.json()['token']}"}
+    requests.post(f"{BASE}/api/password", headers=hh,
+                  json={"current_password": new_pw, "new_password": "pass123"})
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers,
+                 json={"role": "user"})
+    requests.delete(f"{BASE}/api/admin/teams/{t['id']}", headers=admin_headers)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -774,6 +948,8 @@ async def main():
     test_teams(users, admin_headers)
     await test_rooms(users, admin_headers)
     test_extras(users, admin_headers)
+    await test_call_experience(users, admin_headers)
+    await test_trust_safety(users, admin_headers)  # ブロックを作るため最後に実行
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

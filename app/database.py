@@ -53,6 +53,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     # "system_admin" | "site_admin" | "moderator" | "user"
     role: Mapped[str] = mapped_column(String(20), default="user")
+    email: Mapped[str | None] = mapped_column(String(120), nullable=True)  # メール連携用(任意)
     # 初期パスワードのアカウントは初回ログイン時に変更を強制する
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -67,6 +68,7 @@ class Survey(Base):
     rating: Mapped[int] = mapped_column(Integer)  # 1〜5
     talk_again: Mapped[bool] = mapped_column(Boolean, default=False)
     comment: Mapped[str] = mapped_column(Text, default="")
+    answers: Mapped[str] = mapped_column(Text, default="")  # 複数設問の回答(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -152,6 +154,7 @@ class Room(Base):
     session_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     role_matching: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     modes: Mapped[str | None] = mapped_column(String(100), nullable=True)  # "toon,real"等のCSV
+    topic: Mapped[str] = mapped_column(String(200), default="")  # 話題カード(空=なし)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -164,6 +167,60 @@ class RoomManager(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CallPair(Base):
+    """通話セッションの参加者ペアの記録(通報・ブロック・再マッチ優先で使う)"""
+
+    __tablename__ = "call_pairs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    user_a: Mapped[int] = mapped_column(Integer, index=True)
+    user_b: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Report(Base):
+    """通話相手の通報。サイト管理者とチームリーダーのみ閲覧可能"""
+
+    __tablename__ = "reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    reporter_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    reported_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    call_id: Mapped[str] = mapped_column(String(64), default="")
+    reason: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(20), default="open")  # "open" | "resolved"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Block(Base):
+    """ブロック(この相手とは二度とマッチしない)"""
+
+    __tablename__ = "blocks"
+    __table_args__ = (UniqueConstraint("user_id", "blocked_id", name="uq_blocks"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    blocked_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Warning(Base):
+    """特定ユーザーへの警告文。ログイン時にポップアップ表示し、確認で既読になる"""
+
+    __tablename__ = "warnings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)  # 警告対象
+    issuer_name: Mapped[str] = mapped_column(String(50))
+    message: Mapped[str] = mapped_column(String(500))
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -233,6 +290,14 @@ def _migrate() -> None:
         ev_cols = cols(conn, "events")
         if ev_cols and "room_id" not in ev_cols:
             conn.execute(text("ALTER TABLE events ADD COLUMN room_id INTEGER"))
+        if user_cols and "email" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
+        sv_cols = cols(conn, "surveys")
+        if sv_cols and "answers" not in sv_cols:
+            conn.execute(text("ALTER TABLE surveys ADD COLUMN answers TEXT NOT NULL DEFAULT ''"))
+        rm_cols = cols(conn, "rooms")
+        if rm_cols and "topic" not in rm_cols:
+            conn.execute(text("ALTER TABLE rooms ADD COLUMN topic VARCHAR(200) NOT NULL DEFAULT ''"))
         set_cols = cols(conn, "settings")
         if set_cols and "site_id" not in set_cols:
             # 旧スキーマ(キーのみ)は作り直す。設定はデフォルト値に戻る

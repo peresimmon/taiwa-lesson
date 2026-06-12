@@ -5,6 +5,9 @@ REST API + WebSocket の構成。将来のFlutterスマホアプリからも同�
 """
 from pathlib import Path
 
+import json
+import os
+import random
 import re
 import secrets
 
@@ -20,8 +23,11 @@ from .auth import create_token, decode_token, hash_password, verify_password
 from .database import (
     Announcement,
     AuditLog,
+    Block,
+    CallPair,
     Event,
     Post,
+    Report,
     Room,
     RoomManager,
     SessionLocal,
@@ -31,11 +37,25 @@ from .database import (
     Team,
     TeamMember,
     User,
+    Warning,
     get_db,
     init_db,
     utcnow,
 )
 from .matching import Client, manager
+
+
+def _record_call_pair(a: Client, b: Client, call_id: str) -> None:
+    """マッチ成立時に通話ペアを記録する(通報・ブロック・再マッチ優先で使う)"""
+    db = SessionLocal()
+    try:
+        db.add(CallPair(call_id=call_id, site_id=a.site_id, user_a=a.user_id, user_b=b.user_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+manager.on_match = _record_call_pair
 
 MAIN_SITE_SLUG = "taiwa-lesson"  # メインサイトのサイトID(変更の可能性あり)
 SITE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,29}$")
@@ -81,9 +101,58 @@ DEFAULT_SETTINGS = {
     "mode_camera": "false",  # 実映像(カメラそのまま)
     "rooms_enabled": "true",  # ルーム作成機能のオンオフ
     "tagline": "「話す力」じゃなく、「聴く力」を鍛える。",  # ダッシュボードのキャッチコピー
+    # 通話機能の利用可否
+    "feature_mute": "true",          # ミュート
+    "feature_camera_toggle": "true", # 映像オフ
+    "feature_screenshare": "true",   # 画面共有
+    "feature_chat": "true",          # セッション内チャット
+    "role_swap_enabled": "true",     # 役割交代つきセッション(10分×2回)
+    # ロビー通話(役割なし)の話題カード: none / random / fixed
+    "lobby_topic_mode": "none",
+    "lobby_topic_text": "",   # fixedのときの話題
+    "topic_pool": "",         # randomで使う独自アセット(1行1話題。空なら内蔵アセット)
+    "rematch_priority": "true",  # 「また話したい」同士の再マッチ優先
+    "survey_questions": "",   # アンケート設問(1行1問。空なら単一設問survey_questionを使用)
 }
 
 VIDEO_MODES = ("toon", "real", "still", "camera")
+
+# ランダム話題カードの内蔵アセット
+TOPICS = [
+    "最近うれしかったこと", "ハマっている食べもの", "子どものころの夢",
+    "最近ちょっと頑張ったこと", "行ってみたい場所", "好きな季節とその理由",
+    "最近見た映画やドラマ", "休日の過ごし方", "今年挑戦したいこと",
+    "自分のちょっとした自慢", "最近気になっているニュース", "好きな音楽の話",
+    "もし1週間休みがあったら", "最近笑ったできごと", "大切にしている習慣",
+    "学生時代の思い出", "おすすめの本やマンガ", "朝型? 夜型?",
+    "最近買ってよかったもの", "ストレス解消法", "もし宝くじが当たったら",
+    "今いちばん欲しいスキル", "ペットや動物の話", "明日が楽しみになる予定",
+]
+
+
+def send_mail(to: str | None, subject: str, body: str) -> bool:
+    """SMTP設定(環境変数)があればメールを送る。未設定・失敗時はFalse"""
+    host = os.environ.get("SMTP_HOST")
+    if not to or not host:
+        return False
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER", "noreply@example.com")
+        msg["To"] = to
+        with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT", "587")), timeout=10) as s:
+            s.starttls()
+            smtp_user = os.environ.get("SMTP_USER")
+            smtp_pass = os.environ.get("SMTP_PASS")
+            if smtp_user and smtp_pass:
+                s.login(smtp_user, smtp_pass)
+            s.send_message(msg)
+        return True
+    except Exception:
+        return False
 
 
 def audit(db: Session, actor: User, action: str, detail: str = "") -> None:
@@ -227,6 +296,25 @@ class SurveyIn(BaseModel):
     rating: int = Field(ge=1, le=5)
     talk_again: bool = False
     comment: str = Field(default="", max_length=2000)
+    answers: list[int] = Field(default_factory=list, max_length=20)  # 複数設問の評価(1〜5)
+
+
+class ReportIn(BaseModel):
+    call_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ReportStatusIn(BaseModel):
+    status: str = Field(pattern=r"^(open|resolved)$")
+
+
+class BlockIn(BaseModel):
+    call_id: str = Field(min_length=1, max_length=64)
+
+
+class WarningIn(BaseModel):
+    user_id: int
+    message: str = Field(min_length=1, max_length=500)
 
 
 class EventIn(BaseModel):
@@ -267,6 +355,7 @@ class RoomIn(BaseModel):
     session_minutes: int | None = Field(default=None, ge=1, le=60)
     role_matching: bool | None = None
     modes: list[str] | None = None  # Noneでサイト設定に従う
+    topic: str = Field(default="", max_length=200)  # 話題カード(空=なし)
 
 
 class RoomManagerIn(BaseModel):
@@ -292,6 +381,16 @@ class SettingsIn(BaseModel):
     rooms_enabled: bool = True
     site_name: str = Field(default="", max_length=100)  # 空欄なら変更しない
     tagline: str = Field(default="", max_length=200)    # 空欄ならデフォルト
+    feature_mute: bool = True
+    feature_camera_toggle: bool = True
+    feature_screenshare: bool = True
+    feature_chat: bool = True
+    role_swap_enabled: bool = True
+    lobby_topic_mode: str = Field(default="none", pattern=r"^(none|random|fixed)$")
+    lobby_topic_text: str = Field(default="", max_length=200)
+    topic_pool: str = Field(default="", max_length=4000)
+    rematch_priority: bool = True
+    survey_questions: str = Field(default="", max_length=2000)
 
 
 class BulkUsersIn(BaseModel):
@@ -306,6 +405,7 @@ class SiteIn(BaseModel):
 class UserCreateIn(BaseModel):
     username: str = Field(min_length=2, max_length=50)
     password: str = Field(min_length=6, max_length=128)
+    email: str | None = Field(default=None, max_length=120)  # 任意。設定すると案内メールを送る
 
 
 # --- 認証 ---------------------------------------------------------------------
@@ -434,6 +534,16 @@ def app_config(user: User = Depends(active_user), db: Session = Depends(get_db))
         "survey_question": get_setting(db, sid, "survey_question") or DEFAULT_SETTINGS["survey_question"],
         "rooms_enabled": get_setting(db, sid, "rooms_enabled") == "true",
         "can_create_rooms": _is_moderator(user),
+        "role_swap_enabled": get_setting(db, sid, "role_swap_enabled") == "true",
+        "features": {
+            "mute": get_setting(db, sid, "feature_mute") == "true",
+            "camera_toggle": get_setting(db, sid, "feature_camera_toggle") == "true",
+            "screenshare": get_setting(db, sid, "feature_screenshare") == "true",
+            "chat": get_setting(db, sid, "feature_chat") == "true",
+        },
+        "survey_questions": [
+            q.strip() for q in get_setting(db, sid, "survey_questions").splitlines() if q.strip()
+        ] or [get_setting(db, sid, "survey_question") or DEFAULT_SETTINGS["survey_question"]],
         "modes": {
             "toon": get_setting(db, sid, "mode_toon") == "true",
             "real": get_setting(db, sid, "mode_real") == "true",
@@ -452,12 +562,24 @@ def submit_survey(
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
+    # 複数設問の回答は設問文とセットでJSON保存する(設問は後から変更されうるため)
+    answers_json = ""
+    if body.answers:
+        questions = [
+            q.strip() for q in get_setting(db, user.site_id, "survey_questions").splitlines() if q.strip()
+        ] or [get_setting(db, user.site_id, "survey_question") or DEFAULT_SETTINGS["survey_question"]]
+        pairs = [
+            {"question": q, "rating": max(1, min(5, r))}
+            for q, r in zip(questions, body.answers)
+        ]
+        answers_json = json.dumps(pairs, ensure_ascii=False)
     survey = Survey(
         user_id=user.id,
         room_id=body.room_id,
         rating=body.rating,
         talk_again=body.talk_again,
         comment=body.comment,
+        answers=answers_json,
     )
     db.add(survey)
     db.commit()
@@ -483,6 +605,221 @@ def my_surveys(user: User = Depends(active_user), db: Session = Depends(get_db))
         }
         for s in rows
     ]
+
+
+# --- 通報・ブロック・警告(トラスト&セーフティ) -----------------------------------
+
+
+def _call_partner(db: Session, user: User, call_id: str) -> User:
+    """通話IDから自分の相手を特定する(参加者本人のみ)"""
+    cp = db.query(CallPair).filter(CallPair.call_id == call_id).first()
+    if cp is None or user.id not in (cp.user_a, cp.user_b):
+        raise HTTPException(status_code=404, detail="通話の記録が見つかりません")
+    partner = db.get(User, cp.user_b if cp.user_a == user.id else cp.user_a)
+    if partner is None:
+        raise HTTPException(status_code=404, detail="相手のユーザーが見つかりません")
+    return partner
+
+
+def _led_team_member_ids(db: Session, user: User) -> set[int]:
+    """自分がリーダーを務めるチームの全メンバーのユーザーID"""
+    lead_ids = [
+        m.team_id
+        for m in db.query(TeamMember).filter(
+            TeamMember.user_id == user.id, TeamMember.is_leader.is_(True)
+        )
+    ]
+    if not lead_ids:
+        return set()
+    return {
+        m.user_id
+        for m in db.query(TeamMember).filter(TeamMember.team_id.in_(lead_ids))
+    }
+
+
+@app.post("/api/reports", status_code=201)
+def create_report(
+    body: ReportIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """通話相手を通報する(ユーザー情報と紐づけて保存)"""
+    partner = _call_partner(db, user, body.call_id)
+    db.add(
+        Report(
+            site_id=user.site_id,
+            reporter_id=user.id,
+            reported_id=partner.id,
+            call_id=body.call_id,
+            reason=body.reason,
+        )
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/reports")
+def list_reports(
+    team_id: int | None = None,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """通報一覧。サイト管理者は全件、チームリーダーは自チームのメンバーが対象の件のみ"""
+    q = db.query(Report).filter(Report.site_id == user.site_id)
+    if _is_site_admin(user):
+        if team_id:
+            _team_or_404(db, user, team_id)
+            ids = {m.user_id for m in db.query(TeamMember).filter(TeamMember.team_id == team_id)}
+            q = q.filter(Report.reported_id.in_(ids))
+    else:
+        led_ids = _led_team_member_ids(db, user)
+        if not led_ids:
+            raise HTTPException(status_code=403, detail="通報の閲覧権限がありません")
+        if team_id:
+            team = _team_or_404(db, user, team_id)
+            m = _membership(db, team.id, user.id)
+            if m is None or not m.is_leader:
+                raise HTTPException(status_code=403, detail="このチームのリーダーではありません")
+            ids = {x.user_id for x in db.query(TeamMember).filter(TeamMember.team_id == team_id)}
+            q = q.filter(Report.reported_id.in_(ids))
+        else:
+            q = q.filter(Report.reported_id.in_(led_ids))
+    rows = q.order_by(Report.id.desc()).limit(100).all()
+    user_ids = {r.reporter_id for r in rows} | {r.reported_id for r in rows}
+    names = {
+        u.id: u.username
+        for u in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+    return [
+        {
+            "id": r.id,
+            "reporter": names.get(r.reporter_id, "(削除済み)"),
+            "reported": names.get(r.reported_id, "(削除済み)"),
+            "reported_id": r.reported_id,
+            "reason": r.reason,
+            "status": r.status,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@app.put("/api/reports/{report_id}")
+def update_report(
+    report_id: int,
+    body: ReportStatusIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    report = db.get(Report, report_id)
+    if report is None or report.site_id != admin.site_id:
+        raise HTTPException(status_code=404, detail="通報が存在しません")
+    report.status = body.status
+    audit(db, admin, "report_resolve", f"通報#{report.id} → {body.status}")
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/blocks", status_code=201)
+def create_block(
+    body: BlockIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """通話相手をブロックする(以後マッチングされない)"""
+    partner = _call_partner(db, user, body.call_id)
+    exists = (
+        db.query(Block)
+        .filter(Block.user_id == user.id, Block.blocked_id == partner.id)
+        .first()
+    )
+    if not exists:
+        db.add(Block(user_id=user.id, blocked_id=partner.id))
+        db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/warnings", status_code=201)
+def create_warning(
+    body: WarningIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """警告文を発令する(サイト管理者と、対象が所属するチームのリーダーのみ)"""
+    target = db.get(User, body.user_id)
+    if target is None or target.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    if not (_is_site_admin(user) or target.id in _led_team_member_ids(db, user)):
+        raise HTTPException(status_code=403, detail="警告を発令する権限がありません")
+    db.add(
+        Warning(
+            site_id=user.site_id,
+            user_id=target.id,
+            issuer_name=user.username,
+            message=body.message,
+        )
+    )
+    audit(db, user, "warning_issue", target.username)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/warnings/pending")
+def my_pending_warnings(user: User = Depends(active_user), db: Session = Depends(get_db)):
+    """自分宛ての未確認警告(ログイン時にポップアップ表示する)"""
+    rows = (
+        db.query(Warning)
+        .filter(Warning.user_id == user.id, Warning.acknowledged.is_(False))
+        .order_by(Warning.id)
+        .all()
+    )
+    return [
+        {"id": w.id, "message": w.message, "created_at": w.created_at.isoformat()}
+        for w in rows
+    ]
+
+
+@app.post("/api/warnings/{warning_id}/ack")
+def ack_warning(
+    warning_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    w = db.get(Warning, warning_id)
+    if w is None or w.user_id != user.id:
+        raise HTTPException(status_code=404, detail="警告が存在しません")
+    w.acknowledged = True
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{user_id}/reset_password")
+def reset_user_password(
+    user_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """新しい初期パスワードを発行する(サイト管理者・モデレータ)。
+    対象は初回ログイン時に変更を強制される"""
+    if not _is_moderator(user):
+        raise HTTPException(status_code=403, detail="パスワードリセットの権限がありません")
+    target = db.get(User, user_id)
+    if target is None or target.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    if target.role in ("site_admin", "system_admin") and target.id != user.id:
+        raise HTTPException(status_code=400, detail="管理者のパスワードはリセットできません")
+    new_password = secrets.token_urlsafe(6)
+    target.password_hash = hash_password(new_password)
+    target.must_change_password = True
+    audit(db, user, "password_reset", target.username)
+    mailed = send_mail(
+        target.email,
+        "パスワードリセットのお知らせ",
+        f"{target.username} さん\n\n新しい初期パスワード: {new_password}\n"
+        "ログイン後にパスワードの変更が必要です。",
+    )
+    db.commit()
+    return {"ok": True, "password": new_password, "mailed": mailed}
 
 
 # --- チーム ---------------------------------------------------------------------
@@ -714,11 +1051,13 @@ def _room_payload(db: Session, user: User, room: Room) -> dict:
         "modes": {m: m in eff_modes for m in VIDEO_MODES},
         "can_manage": can_manage,
         # 編集フォーム用の生値(管理者のみ)
+        "topic": room.topic,
         "raw": {
             "passphrase": room.passphrase,
             "session_minutes": room.session_minutes,
             "role_matching": room.role_matching,
             "modes": room.modes.split(",") if room.modes else None,
+            "topic": room.topic,
         } if can_manage else None,
         "managers": [
             {"user_id": m.user_id, "username": name}
@@ -751,6 +1090,7 @@ def _apply_room_settings(db: Session, user: User, room: Room, body: RoomIn) -> N
     room.session_minutes = body.session_minutes
     room.role_matching = body.role_matching
     room.modes = ",".join(body.modes) if body.modes is not None else None
+    room.topic = body.topic.strip()
 
 
 @app.get("/api/rooms")
@@ -1057,12 +1397,21 @@ def admin_create_user(
         site_id=admin.site_id,
         username=body.username,
         password_hash=hash_password(body.password),
+        email=(body.email or "").strip() or None,
         must_change_password=True,
     )
     db.add(user)
     audit(db, admin, "user_create", body.username)
+    # メールアドレスがあれば案内メール(招待)を送る
+    mailed = send_mail(
+        user.email,
+        "アカウントのご案内",
+        f"{user.username} さん\n\nアカウントが作成されました。\n"
+        f"ユーザー名: {user.username}\n初期パスワード: {body.password}\n"
+        "初回ログイン時にパスワードの変更が必要です。",
+    )
     db.commit()
-    return {"ok": True, "id": user.id}
+    return {"ok": True, "id": user.id, "mailed": mailed}
 
 
 @app.post("/api/admin/users/bulk")
@@ -1071,8 +1420,8 @@ def admin_bulk_users(
     admin: User = Depends(site_admin_user),
     db: Session = Depends(get_db),
 ):
-    """CSVでユーザーを一括登録する。1行=「ユーザー名,初期パスワード」。
-    パスワード省略時は自動生成し、レスポンスで一度だけ返す"""
+    """CSVでユーザーを一括登録する。1行=「ユーザー名,初期パスワード,メール(任意)」。
+    パスワード省略時は自動生成し、レスポンスで一度だけ返す。メールがあれば案内を送る"""
     results = []
     created = 0
     for line in body.csv.splitlines():
@@ -1082,6 +1431,7 @@ def admin_bulk_users(
         parts = [p.strip() for p in line.split(",")]
         name = parts[0]
         given_pw = parts[1] if len(parts) > 1 and parts[1] else ""
+        email = parts[2] if len(parts) > 2 and parts[2] else None
         password = given_pw or secrets.token_urlsafe(6)
         if not (2 <= len(name) <= 50):
             results.append({"username": name, "password": None, "status": "ユーザー名は2〜50文字"})
@@ -1097,11 +1447,23 @@ def admin_bulk_users(
                 site_id=admin.site_id,
                 username=name,
                 password_hash=hash_password(password),
+                email=email,
                 must_change_password=True,
             )
         )
         created += 1
-        results.append({"username": name, "password": password if not given_pw else None, "status": "ok"})
+        mailed = send_mail(
+            email,
+            "アカウントのご案内",
+            f"{name} さん\n\nアカウントが作成されました。\n"
+            f"ユーザー名: {name}\n初期パスワード: {password}\n"
+            "初回ログイン時にパスワードの変更が必要です。",
+        )
+        results.append({
+            "username": name,
+            "password": password if not given_pw else None,
+            "status": "ok" + ("(メール送信済み)" if mailed else ""),
+        })
     audit(db, admin, "users_bulk", f"CSV一括登録 {created}件")
     db.commit()
     return {"created": created, "results": results}
@@ -1157,6 +1519,49 @@ def admin_report(admin: User = Depends(site_admin_user), db: Session = Depends(g
         "daily": daily,
         "teams": teams,
     }
+
+
+@app.get("/api/admin/report/export")
+def admin_report_export(
+    admin: User = Depends(site_admin_user), db: Session = Depends(get_db)
+):
+    """セッション(アンケート)データのCSVエクスポート"""
+    from fastapi.responses import Response
+
+    rows = (
+        db.query(Survey, User.username)
+        .join(User, Survey.user_id == User.id)
+        .filter(User.site_id == admin.site_id)
+        .order_by(Survey.id)
+        .all()
+    )
+
+    def esc(v) -> str:
+        s = str(v if v is not None else "")
+        return '"' + s.replace('"', '""') + '"'
+
+    lines = ["日時,ユーザー名,評価,また話したい,コメント,設問別回答"]
+    for s, name in rows:
+        answers = ""
+        if s.answers:
+            try:
+                answers = " / ".join(
+                    f"{a['question']}: {a['rating']}" for a in json.loads(s.answers)
+                )
+            except Exception:
+                answers = ""
+        lines.append(",".join([
+            esc(s.created_at.isoformat()), esc(name), esc(s.rating),
+            esc("はい" if s.talk_again else "いいえ"), esc(s.comment), esc(answers),
+        ]))
+    csv_data = "﻿" + "\n".join(lines)  # BOM付きでExcelの文字化けを防ぐ
+    audit(db, admin, "report_export", f"{len(rows)}件")
+    db.commit()
+    return Response(
+        content=csv_data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=sessions.csv"},
+    )
 
 
 @app.get("/api/admin/audit")
@@ -1273,6 +1678,16 @@ def _settings_payload(db: Session, site_id: int) -> dict:
         "mode_still": flag("mode_still"),
         "mode_camera": flag("mode_camera"),
         "rooms_enabled": flag("rooms_enabled"),
+        "feature_mute": flag("feature_mute"),
+        "feature_camera_toggle": flag("feature_camera_toggle"),
+        "feature_screenshare": flag("feature_screenshare"),
+        "feature_chat": flag("feature_chat"),
+        "role_swap_enabled": flag("role_swap_enabled"),
+        "lobby_topic_mode": get_setting(db, site_id, "lobby_topic_mode"),
+        "lobby_topic_text": get_setting(db, site_id, "lobby_topic_text"),
+        "topic_pool": get_setting(db, site_id, "topic_pool"),
+        "rematch_priority": flag("rematch_priority"),
+        "survey_questions": get_setting(db, site_id, "survey_questions"),
     }
 
 
@@ -1294,11 +1709,17 @@ def admin_put_settings(
     for key in (
         "allow_registration", "role_matching", "anonymous_mode", "survey_enabled",
         "mode_toon", "mode_real", "mode_still", "mode_camera", "rooms_enabled",
+        "feature_mute", "feature_camera_toggle", "feature_screenshare", "feature_chat",
+        "role_swap_enabled", "rematch_priority",
     ):
         set_setting(db, sid, key, "true" if getattr(body, key) else "false")
     set_setting(db, sid, "survey_question",
                 body.survey_question.strip() or DEFAULT_SETTINGS["survey_question"])
     set_setting(db, sid, "tagline", body.tagline.strip() or DEFAULT_SETTINGS["tagline"])
+    set_setting(db, sid, "lobby_topic_mode", body.lobby_topic_mode)
+    set_setting(db, sid, "lobby_topic_text", body.lobby_topic_text.strip())
+    set_setting(db, sid, "topic_pool", body.topic_pool.strip())
+    set_setting(db, sid, "survey_questions", body.survey_questions.strip())
     if body.site_name.strip():
         site = db.get(Site, sid)
         if site:
@@ -1559,6 +1980,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
                 try:
                     role_matching = get_setting(sdb, user.site_id, "role_matching") == "true"
                     client.anonymous = get_setting(sdb, user.site_id, "anonymous_mode") == "true"
+                    client.base_topic = ""
                     if room_id:
                         room = sdb.get(Room, room_id)
                         if (
@@ -1574,8 +1996,50 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
                             join_error = "合言葉が違います"
                         elif room.capacity and manager.room_participants(user.site_id, room_id) >= room.capacity:
                             join_error = "このルームは満員です"
-                        elif room.role_matching is not None:
-                            role_matching = room.role_matching  # ルーム設定がサイト設定より優先
+                        else:
+                            if room.role_matching is not None:
+                                role_matching = room.role_matching  # ルーム設定がサイト設定より優先
+                            client.base_topic = room.topic  # ルーム通話の話題カード
+                    elif not role_matching:
+                        # ロビー通話(役割なし)の話題カードはサイト設定に従う
+                        mode = get_setting(sdb, user.site_id, "lobby_topic_mode")
+                        if mode == "fixed":
+                            client.base_topic = get_setting(sdb, user.site_id, "lobby_topic_text")
+                        elif mode == "random":
+                            pool = [
+                                t.strip()
+                                for t in get_setting(sdb, user.site_id, "topic_pool").splitlines()
+                                if t.strip()
+                            ] or TOPICS
+                            client.base_topic = random.choice(pool)
+                    # ブロック(相互)と「また話したい」相互一致を読み込む
+                    client.blocked = {
+                        b.blocked_id for b in sdb.query(Block).filter(Block.user_id == user.id)
+                    } | {
+                        b.user_id for b in sdb.query(Block).filter(Block.blocked_id == user.id)
+                    }
+                    client.preferred = set()
+                    if get_setting(sdb, user.site_id, "rematch_priority") == "true":
+                        my_likes = {
+                            s.room_id
+                            for s in sdb.query(Survey).filter(
+                                Survey.user_id == user.id, Survey.talk_again.is_(True)
+                            )
+                        }
+                        if my_likes:
+                            for cp in sdb.query(CallPair).filter(CallPair.call_id.in_(my_likes)):
+                                partner_id = cp.user_b if cp.user_a == user.id else cp.user_a
+                                mutual = (
+                                    sdb.query(Survey)
+                                    .filter(
+                                        Survey.room_id == cp.call_id,
+                                        Survey.user_id == partner_id,
+                                        Survey.talk_again.is_(True),
+                                    )
+                                    .first()
+                                )
+                                if mutual:
+                                    client.preferred.add(partner_id)
                 finally:
                     sdb.close()
                 if join_error:
@@ -1590,9 +2054,27 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
             elif msg_type == "cancel_queue":
                 await manager.cancel_queue(client)
             elif msg_type == "consent":
-                await manager.handle_consent(client, bool(msg.get("accept")))
+                await manager.handle_consent(
+                    client, bool(msg.get("accept")), str(msg.get("topic") or "")
+                )
             elif msg_type == "signal":
                 await manager.relay_signal(client, msg.get("data") or {})
+            elif msg_type == "chat":
+                sdb = SessionLocal()
+                try:
+                    chat_ok = get_setting(sdb, user.site_id, "feature_chat") == "true"
+                finally:
+                    sdb.close()
+                if chat_ok:
+                    await manager.relay_chat(client, str(msg.get("text") or "")[:500])
+            elif msg_type == "swap_request":
+                sdb = SessionLocal()
+                try:
+                    swap_ok = get_setting(sdb, user.site_id, "role_swap_enabled") == "true"
+                finally:
+                    sdb.close()
+                if swap_ok:
+                    await manager.handle_swap(client)
             elif msg_type == "leave":
                 await manager.leave_call(client)
     except WebSocketDisconnect:

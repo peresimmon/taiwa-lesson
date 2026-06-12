@@ -49,8 +49,11 @@ class Client:
         self.role: str | None = None      # 待機〜セッション中の役割
         self.nickname: str | None = None  # セッション限定のランダムな呼び名
         self.anonymous = True             # False=実名(ユーザー名)で表示するサイト
-        self.queue_room = 0               # 待機中のルームID(0=通常マッチング)
+        self.queue_room = 0               # 待機中のルームID(0=ロビー通話)
         self.active_room_id = 0           # 通話中のルームID(定員カウント用)
+        self.blocked: set[int] = set()    # 相互ブロック済みユーザーID(マッチさせない)
+        self.preferred: set[int] = set()  # 「また話したい」が相互一致したユーザーID(優先)
+        self.base_topic = ""              # ルーム/サイト設定由来の話題カード
 
     async def send(self, payload: dict) -> None:
         try:
@@ -65,6 +68,8 @@ class Room:
         self.members: dict[int, Client] = {a.user_id: a, b.user_id: b}
         self.consents: set[int] = set()
         self.started = False
+        self.speaker_topic = ""        # 話し手が同意画面で設定した話題
+        self.swap_requests: set[int] = set()  # 役割交代に同意したユーザー
 
     def peer_of(self, client: Client) -> Client | None:
         for uid, member in self.members.items():
@@ -79,6 +84,7 @@ class MatchingManager:
         # (site_id, room_id, role) -> 待機中クライアント。サイト・ルームをまたいだマッチングはしない
         self.waiting: dict[tuple[int, int, str], list[Client]] = {}
         self.clients: dict[int, Client] = {}
+        self.on_match = None  # マッチ成立時のフック(通話ペアのDB記録に使う)
 
     def _queue(self, site_id: int, room_id: int, role: str) -> list[Client]:
         return self.waiting.setdefault((site_id, room_id, role), [])
@@ -146,8 +152,11 @@ class MatchingManager:
             else:
                 opposite = ROLE_LISTENER if role == ROLE_SPEAKER else ROLE_SPEAKER
                 partner_queue = self._queue(client.site_id, room_id, opposite)
-            if partner_queue:
-                partner = random.choice(partner_queue)
+            # ブロック相手(相互)を除外し、「また話したい」相互一致を優先する
+            candidates = [c for c in partner_queue if c.user_id not in client.blocked]
+            if candidates:
+                preferred = [c for c in candidates if c.user_id in client.preferred]
+                partner = random.choice(preferred or candidates)
                 partner_queue.remove(partner)
                 await self._create_room(client, partner)
             else:
@@ -177,6 +186,8 @@ class MatchingManager:
         else:
             # 実名サイト(社内利用など): ユーザー名をそのまま表示
             a.nickname, b.nickname = a.username, b.username
+        if self.on_match:
+            self.on_match(a, b, room.id)  # 通話ペアを記録(通報・ブロック用)
         for member in (a, b):
             peer = room.peer_of(member)
             await member.send(
@@ -196,7 +207,7 @@ class MatchingManager:
 
     # --- 同意フロー ---------------------------------------------------------
 
-    async def handle_consent(self, client: Client, accept: bool) -> None:
+    async def handle_consent(self, client: Client, accept: bool, topic: str = "") -> None:
         async with self.lock:
             room = client.room
             if room is None or room.started:
@@ -205,13 +216,55 @@ class MatchingManager:
                 # 同意しなかった → 部屋を解散し、相手に通知
                 await self._teardown_room(client, notify_type="peer_declined")
                 return
+            # 話し手は同意画面で話題カードを設定できる(ロビー通話)
+            if topic and client.role == ROLE_SPEAKER:
+                room.speaker_topic = topic[:200]
             room.consents.add(client.user_id)
             if len(room.consents) == 2:
                 # 双方が同意 → 通話開始。先にマッチした側がWebRTCのofferを作る
                 room.started = True
                 members = list(room.members.values())
+                # 話題カード: 話し手の設定 > ルーム/サイト設定
+                final_topic = room.speaker_topic or next(
+                    (m.base_topic for m in members if m.base_topic), ""
+                )
                 for i, member in enumerate(members):
-                    await member.send({"type": "call_start", "initiator": i == 0})
+                    await member.send(
+                        {"type": "call_start", "initiator": i == 0, "topic": final_topic}
+                    )
+
+    # --- 役割交代(10分×2回) ---------------------------------------------------
+
+    async def handle_swap(self, client: Client) -> None:
+        """双方が希望したら役割を交代してセッションを続ける"""
+        async with self.lock:
+            room = client.room
+            if room is None or not room.started:
+                return
+            room.swap_requests.add(client.user_id)
+            peer = room.peer_of(client)
+            if peer is None:
+                return
+            if len(room.swap_requests) < 2:
+                await peer.send({"type": "swap_offer"})  # 相手に交代の希望を通知
+                return
+            room.swap_requests.clear()
+            client.role, peer.role = peer.role, client.role
+            for member in room.members.values():
+                other = room.peer_of(member)
+                await member.send(
+                    {"type": "swap_start", "my_role": member.role, "peer_role": other.role}
+                )
+
+    # --- セッション内チャット ---------------------------------------------------
+
+    async def relay_chat(self, client: Client, text: str) -> None:
+        room = client.room
+        if room is None or not room.started or not text:
+            return
+        peer = room.peer_of(client)
+        if peer is not None:
+            await peer.send({"type": "chat", "text": text, "sender": client.nickname})
 
     # --- シグナリング中継 ----------------------------------------------------
 

@@ -34,6 +34,13 @@ let myRole = "";         // 現在のセッションでの役割
 let myNickname = "";     // セッション限定のランダムな呼び名
 let peerRole = "";
 let peerNickname = "";
+let lastCallId = "";     // 直近の通話ID(通報・ブロックで使う)
+let callTopic = "";      // 話題カード
+let sessionRound = 1;    // 役割交代つきセッションの回数(1→2)
+let chatLog = [];        // セッション内チャット(終了画面で破棄)
+let micMuted = false;
+let camOff = false;
+let screenStream = null; // 画面共有中のストリーム
 
 const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -105,6 +112,7 @@ function showLobby() {
   showScreen("lobby");
   loadDashboard();
   ensureWS();
+  checkWarnings(); // 未確認の警告があればポップアップ表示
 }
 
 async function ensureWS() {
@@ -231,6 +239,8 @@ async function handleWSMessage(msg) {
 
     case "matched":
       currentRoomId = msg.room_id;
+      lastCallId = msg.room_id;
+      playMatchSound();
       myRole = msg.my_role;
       myNickname = msg.my_nickname;
       peerRole = msg.peer_role;
@@ -246,6 +256,11 @@ async function handleWSMessage(msg) {
       $("consent-status").textContent = "";
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
+      // ロビー通話で話し手なら、今日の話題を自分で設定できる
+      $("topic-input-wrap").classList.toggle(
+        "hidden", !(myRole === "speaker" && !activeRoomConfig)
+      );
+      $("topic-input").value = "";
       ensureAllowedAvatar();
       if (["toon", "real"].includes(AVATARS[avatarType].mode)) loadFaceLandmarker(); // 先読み
       if (AVATARS[avatarType].mode === "real") loadVRM(avatarType);
@@ -255,7 +270,35 @@ async function handleWSMessage(msg) {
 
     case "call_start":
       isInitiator = msg.initiator;
+      callTopic = msg.topic || "";
       await startCall();
+      break;
+
+    case "chat":
+      appendChat({ mine: false, sender: msg.sender, text: msg.text });
+      if ($("chat-panel").classList.contains("hidden")) {
+        $("btn-chat").classList.add("attention"); // 未読あり
+      }
+      break;
+
+    case "swap_offer":
+      // 相手が役割交代を希望している
+      if (!$("screen-call").classList.contains("hidden")) {
+        $("swap-text").textContent = "相手が役割交代を希望しています。交代してもう1回話しますか？";
+        $("swap-overlay").classList.remove("hidden");
+      }
+      break;
+
+    case "swap_start":
+      // 役割を交代して2回目のセッションへ
+      sessionRound = 2;
+      myRole = msg.my_role;
+      peerRole = msg.peer_role;
+      $("swap-overlay").classList.add("hidden");
+      $("btn-swap-yes").disabled = false;
+      $("swap-status").textContent = "";
+      updateCallIdentity();
+      startSessionTimer();
       break;
 
     case "peer_declined":
@@ -324,7 +367,7 @@ $("btn-consent-ok").onclick = async () => {
   $("btn-consent-ng").disabled = true;
   $("consent-status").textContent = "カメラ・マイクを準備しています…";
   try {
-    rawStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    rawStream = await navigator.mediaDevices.getUserMedia(mediaConstraints());
   } catch (err) {
     $("consent-status").textContent = "";
     $("lobby-error").textContent =
@@ -336,7 +379,7 @@ $("btn-consent-ok").onclick = async () => {
   $("consent-status").textContent = "アバターを準備しています…";
   localStream = await buildAvatarStream();
   $("consent-status").textContent = "相手の同意を待っています…";
-  wsSend({ type: "consent", accept: true });
+  wsSend({ type: "consent", accept: true, topic: $("topic-input").value.trim() });
 };
 
 $("btn-consent-ng").onclick = () => {
@@ -1120,9 +1163,8 @@ function renderAvatarPicker() {
 }
 
 // ---- WebRTC通話 -----------------------------------------------------------------
-async function startCall() {
-  showScreen("call");
-  // 役割と呼び名を常時表示する(役割なしマッチングでは役割タグを出さない)
+/* 役割と呼び名の常時表示を更新する(役割交代時にも使う) */
+function updateCallIdentity() {
   const hasRoles = myRole !== "any";
   $("call-my-name").textContent = myNickname;
   $("call-peer-name").textContent = peerNickname;
@@ -1136,6 +1178,35 @@ async function startCall() {
   }
   $("remote-label").textContent = `${peerNickname}${roleParen(peerRole)}`;
   $("local-label").textContent = `${myNickname}${roleParen(myRole)}`;
+}
+
+async function startCall() {
+  showScreen("call");
+  updateCallIdentity();
+  // 話題カード
+  $("topic-banner").classList.toggle("hidden", !callTopic);
+  $("topic-text").textContent = callTopic;
+  // 通話機能の初期化(サイト設定で利用可否が変わる)
+  sessionRound = 1;
+  chatLog = [];
+  micMuted = false;
+  camOff = false;
+  $("chat-messages").innerHTML = "";
+  $("chat-panel").classList.add("hidden");
+  $("swap-overlay").classList.add("hidden");
+  $("btn-swap-yes").disabled = false;
+  $("swap-status").textContent = "";
+  const feats = siteConfig.features || {};
+  $("btn-mute").classList.toggle("hidden", !feats.mute);
+  $("btn-cam").classList.toggle("hidden", !feats.camera_toggle);
+  $("btn-share").classList.toggle("hidden", !feats.screenshare);
+  $("btn-chat").classList.toggle("hidden", !feats.chat);
+  $("btn-chat").classList.remove("attention");
+  $("btn-mute").classList.remove("active");
+  $("btn-cam").classList.remove("active");
+  $("btn-share").classList.remove("active");
+  $("btn-mute").textContent = "🎤 ミュート";
+  $("btn-cam").textContent = "📷 映像オフ";
   $("call-status").textContent = "接続中…";
   pendingCandidates = [];
 
@@ -1193,6 +1264,7 @@ async function flushPendingCandidates() {
 }
 
 function startSessionTimer() {
+  if (sessionTimer) clearInterval(sessionTimer);
   // ルーム参加中はルームのセッション時間がサイト設定より優先される
   const minutes = (activeRoomConfig && activeRoomConfig.session_minutes) || sessionMinutes;
   sessionSeconds = minutes * 60;
@@ -1201,10 +1273,36 @@ function startSessionTimer() {
     sessionSeconds--;
     updateTimerDisplay();
     if (sessionSeconds <= 0) {
-      endCallToSurvey(true);
+      clearInterval(sessionTimer);
+      sessionTimer = null;
+      onSessionTimeUp();
     }
   }, 1000);
 }
+
+/* セッション時間終了。役割ありの1回目なら役割交代を提案する(10分×2回) */
+function onSessionTimeUp() {
+  const canSwap =
+    siteConfig.role_swap_enabled &&
+    sessionRound === 1 &&
+    (myRole === "speaker" || myRole === "listener");
+  if (canSwap) {
+    $("swap-text").textContent = "役割を交代して、もう1回話しますか？";
+    $("swap-overlay").classList.remove("hidden");
+  } else {
+    endCallToSurvey(true);
+  }
+}
+
+$("btn-swap-yes").onclick = () => {
+  wsSend({ type: "swap_request" });
+  $("btn-swap-yes").disabled = true;
+  $("swap-status").textContent = "相手の同意を待っています…";
+};
+$("btn-swap-no").onclick = () => {
+  $("swap-overlay").classList.add("hidden");
+  endCallToSurvey(true);
+};
 
 function updateTimerDisplay() {
   const m = Math.floor(Math.max(0, sessionSeconds) / 60);
@@ -1214,18 +1312,163 @@ function updateTimerDisplay() {
 
 $("btn-end-call").onclick = () => endCallToSurvey(true);
 
+// ---- 通話コントロール(ミュート・映像オフ・画面共有・チャット) --------------------
+$("btn-mute").onclick = () => {
+  micMuted = !micMuted;
+  if (localStream) localStream.getAudioTracks().forEach((t) => (t.enabled = !micMuted));
+  $("btn-mute").textContent = micMuted ? "🔇 ミュート中" : "🎤 ミュート";
+  $("btn-mute").classList.toggle("active", micMuted);
+};
+
+$("btn-cam").onclick = () => {
+  camOff = !camOff;
+  if (localStream) localStream.getVideoTracks().forEach((t) => (t.enabled = !camOff));
+  $("btn-cam").textContent = camOff ? "🚫 映像オフ中" : "📷 映像オフ";
+  $("btn-cam").classList.toggle("active", camOff);
+};
+
+$("btn-share").onclick = async () => {
+  if (!pc) return;
+  if (screenStream) {
+    stopScreenShare();
+    return;
+  }
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  } catch {
+    return; // キャンセル
+  }
+  const track = screenStream.getVideoTracks()[0];
+  const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+  if (sender) await sender.replaceTrack(track);
+  $("local-video").srcObject = screenStream;
+  $("btn-share").textContent = "🖥️ 共有を停止";
+  $("btn-share").classList.add("active");
+  track.onended = stopScreenShare; // ブラウザの「共有を停止」にも追従
+};
+
+function stopScreenShare() {
+  if (!screenStream) return;
+  screenStream.getTracks().forEach((t) => t.stop());
+  screenStream = null;
+  const original = localStream && localStream.getVideoTracks()[0];
+  const sender = pc && pc.getSenders().find((s) => s.track && s.track.kind === "video");
+  if (sender && original) sender.replaceTrack(original);
+  $("local-video").srcObject = localStream;
+  $("btn-share").textContent = "🖥️ 画面共有";
+  $("btn-share").classList.remove("active");
+}
+
+$("btn-chat").onclick = () => {
+  const panel = $("chat-panel");
+  panel.classList.toggle("hidden");
+  $("btn-chat").classList.remove("attention");
+  if (!panel.classList.contains("hidden")) $("chat-input").focus();
+};
+
+$("chat-form").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("chat-input").value.trim();
+  if (!text) return;
+  wsSend({ type: "chat", text });
+  appendChat({ mine: true, sender: myNickname, text });
+  $("chat-input").value = "";
+};
+
+function appendChat(msg) {
+  const time = new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+  chatLog.push({ ...msg, time });
+  const div = document.createElement("div");
+  div.className = "chat-msg" + (msg.mine ? " mine" : "");
+  div.innerHTML = `<small>${escapeHtml(msg.sender)} ${time}</small><span>${escapeHtml(msg.text)}</span>`;
+  $("chat-messages").appendChild(div);
+  $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
+}
+
+// ---- アンケート(複数設問対応)とチャットログ -------------------------------------
+function surveyQuestions() {
+  return siteConfig.survey_questions && siteConfig.survey_questions.length
+    ? siteConfig.survey_questions
+    : [siteConfig.survey_question];
+}
+
+function buildSurveyUI() {
+  $("survey-questions-wrap").innerHTML = surveyQuestions()
+    .map(
+      (q, i) => `
+      <label>${escapeHtml(q)}</label>
+      <div class="stars">
+        ${[5, 4, 3, 2, 1]
+          .map(
+            (v) =>
+              `<input type="radio" name="rating${i}" value="${v}" id="q${i}s${v}" ${v === 3 ? "checked" : ""}><label for="q${i}s${v}">★</label>`
+          )
+          .join("")}
+      </div>`
+    )
+    .join("");
+}
+
+function renderChatLogSection() {
+  if (!chatLog.length) {
+    $("chatlog-wrap").classList.add("hidden");
+    return;
+  }
+  $("chatlog-wrap").classList.remove("hidden");
+  $("chatlog-list").innerHTML = chatLog
+    .map(
+      (m) => `<li><div class="p-meta"><strong>${escapeHtml(m.sender)}</strong> ${m.time}</div>
+        <div class="p-body">${escapeHtml(m.text)}</div></li>`
+    )
+    .join("");
+}
+
+$("btn-save-chatlog").onclick = () => {
+  const text = chatLog.map((m) => `[${m.time}] ${m.sender}: ${m.text}`).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  a.download = "chatlog.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+function discardChatLog() {
+  chatLog = [];
+  $("chatlog-wrap").classList.add("hidden");
+}
+
 function endCallToSurvey(sendLeave) {
   if (sendLeave) wsSend({ type: "leave" });
+  $("swap-overlay").classList.add("hidden");
   cleanupCall(false);
   if (!siteConfig.survey_enabled) {
-    // サイト設定でアンケート無効ならそのままホームへ
     currentRoomId = "";
+    if (chatLog.length) {
+      // アンケートなしでもチャットログの保存を促してから破棄する
+      openModal(
+        "チャットログ",
+        '<p class="note">この画面を閉じるとチャットログは削除されます。</p>' +
+          '<ul class="post-list">' +
+          chatLog
+            .map(
+              (m) => `<li><div class="p-meta"><strong>${escapeHtml(m.sender)}</strong> ${m.time}</div>
+                <div class="p-body">${escapeHtml(m.text)}</div></li>`
+            )
+            .join("") +
+          "</ul>",
+        [
+          { label: "保存する", primary: true, onClick: () => $("btn-save-chatlog").onclick() },
+          { label: "閉じる(削除)", onClick: () => { discardChatLog(); closeModal(); showLobby(); } },
+        ]
+      );
+      return;
+    }
     showLobby();
     return;
   }
   // アンケート初期化(設問はサイト設定に従う)
-  $("survey-question").textContent = siteConfig.survey_question;
-  $("star3").checked = true;
+  buildSurveyUI();
+  renderChatLogSection();
   $("survey-again").checked = false;
   $("survey-comment").value = "";
   $("survey-error").textContent = "";
@@ -1237,6 +1480,10 @@ function cleanupCall(clearRoom = true) {
   if (avatarLoop) { cancelAnimationFrame(avatarLoop); avatarLoop = null; }
   pitchBase = null; // 次の通話で中立姿勢を取り直す
   pitchFrames = 0;
+  if (screenStream) {
+    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream = null;
+  }
   if (pc) { pc.close(); pc = null; }
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
@@ -1261,15 +1508,20 @@ function cleanupCall(clearRoom = true) {
 $("survey-form").onsubmit = async (e) => {
   e.preventDefault();
   $("survey-error").textContent = "";
-  const rating = parseInt(document.querySelector('input[name="rating"]:checked').value, 10);
+  const answers = surveyQuestions().map((_, i) => {
+    const el = document.querySelector(`input[name="rating${i}"]:checked`);
+    return el ? parseInt(el.value, 10) : 3;
+  });
   try {
     await api("/api/surveys", "POST", {
       room_id: currentRoomId,
-      rating,
+      rating: answers[0],
+      answers,
       talk_again: $("survey-again").checked,
       comment: $("survey-comment").value.trim(),
     });
     currentRoomId = "";
+    discardChatLog(); // 終了画面を離れるのでチャットログを破棄
     showScreen("done");
   } catch (err) {
     $("survey-error").textContent = err.message;
@@ -1472,7 +1724,9 @@ async function showTeamMembers(teamId, name, isLeader) {
         (m) => `<li>
           <span>${escapeHtml(m.username)}</span>
           ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
-          ${isLeader && !m.is_leader ? `<span class="h-date"><button class="btn-text danger" data-remove="${m.user_id}">削除</button></span>` : ""}
+          ${isLeader && !m.is_leader ? `<span class="h-date">
+            <button class="btn-text" data-warnmember="${m.user_id}" data-name="${escapeHtml(m.username)}">警告</button>
+            <button class="btn-text danger" data-remove="${m.user_id}">削除</button></span>` : ""}
         </li>`
       )
       .join("");
@@ -1487,6 +1741,29 @@ async function showTeamMembers(teamId, name, isLeader) {
         }
       };
     });
+    $("team-member-list").querySelectorAll("[data-warnmember]").forEach((btn) => {
+      btn.onclick = () => issueWarning(parseInt(btn.dataset.warnmember, 10), btn.dataset.name);
+    });
+    // チームリーダーには、自チームのメンバーが対象の通報を表示する
+    if (isLeader) {
+      try {
+        const reports = await api(`/api/reports?team_id=${teamId}`);
+        if (reports.length) {
+          $("team-member-list").insertAdjacentHTML(
+            "beforeend",
+            `<li class="team-reports-head"><strong>このチームへの通報</strong></li>` +
+              reports
+                .map(
+                  (r) => `<li>
+                    <span>${escapeHtml(r.reported)}: ${escapeHtml(r.reason)}</span>
+                    <span class="h-date">${parseUTC(r.created_at).toLocaleDateString("ja-JP")} ${r.status === "open" ? "未対応" : "対応済み"}</span>
+                  </li>`
+                )
+                .join("")
+          );
+        }
+      } catch { /* リーダー以外には出さない */ }
+    }
   } catch (err) {
     $("team-error").textContent = err.message;
   }
@@ -1610,6 +1887,7 @@ function openRoomForm(room) {
   $("room-name").value = room ? room.name : "";
   $("room-team").value = room && room.team_id ? String(room.team_id) : "";
   $("room-pass").value = room && room.raw ? room.raw.passphrase : "";
+  $("room-topic").value = room && room.raw ? room.raw.topic : "";
   $("room-capacity").value = room ? room.capacity : 0;
   $("room-expires").value = "";
   $("room-minutes").value = room && room.raw && room.raw.session_minutes ? room.raw.session_minutes : "";
@@ -1671,6 +1949,7 @@ $("room-form").onsubmit = async (e) => {
     name: $("room-name").value.trim(),
     team_id: $("room-team").value ? parseInt($("room-team").value, 10) : null,
     passphrase: $("room-pass").value,
+    topic: $("room-topic").value.trim(),
     capacity: parseInt($("room-capacity").value || "0", 10),
     expires_hours: $("room-expires").value ? parseInt($("room-expires").value, 10) : null,
     session_minutes: $("room-minutes").value ? parseInt($("room-minutes").value, 10) : null,
@@ -1822,6 +2101,7 @@ async function showAdmin() {
       loadAdminTeams(),
       loadAdminReport(),
       loadAdminAudit(),
+      loadAdminReports(),
     ]);
   } catch (err) {
     $("admin-error").textContent = err.message;
@@ -1843,6 +2123,8 @@ async function loadAdminUsers() {
         <td class="admin-actions">
           <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.username)}">履歴</button>
           ${isAdmin ? "" : `<button class="btn-text" data-setrole="${u.id}" data-newrole="${u.role === "moderator" ? "user" : "moderator"}">${u.role === "moderator" ? "モデレータ解除" : "モデレータ化"}</button>
+          <button class="btn-text" data-resetpw="${u.id}" data-name="${escapeHtml(u.username)}">PWリセット</button>
+          <button class="btn-text" data-warnuser="${u.id}" data-name="${escapeHtml(u.username)}">警告</button>
           <button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
         </td>
       </tr>`;
@@ -1852,6 +2134,24 @@ async function loadAdminUsers() {
 
   $("admin-user-rows").querySelectorAll("[data-history]").forEach((btn) => {
     btn.onclick = () => loadAdminHistory(btn.dataset.history, btn.dataset.name);
+  });
+  $("admin-user-rows").querySelectorAll("[data-resetpw]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm(`「${btn.dataset.name}」のパスワードをリセットします。よろしいですか？`)) return;
+      try {
+        const r = await api(`/api/admin/users/${btn.dataset.resetpw}/reset_password`, "POST");
+        alert(
+          `新しい初期パスワード: ${r.password}\n` +
+          (r.mailed ? "登録メールアドレスに送信しました。" : "本人に伝えてください(この画面にしか表示されません)。") +
+          "\n初回ログイン時にパスワード変更が必要です。"
+        );
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
+  });
+  $("admin-user-rows").querySelectorAll("[data-warnuser]").forEach((btn) => {
+    btn.onclick = () => issueWarning(parseInt(btn.dataset.warnuser, 10), btn.dataset.name);
   });
   $("admin-user-rows").querySelectorAll("[data-setrole]").forEach((btn) => {
     btn.onclick = async () => {
@@ -1901,13 +2201,35 @@ $("admin-user-form").onsubmit = async (e) => {
   e.preventDefault();
   $("admin-error").textContent = "";
   try {
-    await api("/api/admin/users", "POST", {
+    const r = await api("/api/admin/users", "POST", {
       username: $("new-user-name").value.trim(),
       password: $("new-user-pass").value,
+      email: $("new-user-email").value.trim() || null,
     });
+    if ($("new-user-email").value.trim() && !r.mailed) {
+      $("admin-error").textContent = "ユーザーは作成しましたが、メールは送信できませんでした(SMTP未設定)";
+    }
     $("new-user-name").value = "";
     $("new-user-pass").value = "";
+    $("new-user-email").value = "";
     await loadAdminUsers();
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+};
+
+$("btn-export-csv").onclick = async () => {
+  try {
+    const res = await fetch("/api/admin/report/export", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("エクスポートに失敗しました");
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sessions.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
@@ -1928,6 +2250,16 @@ async function loadAdminSettings() {
   $("set-mode-still").checked = s.mode_still;
   $("set-mode-camera").checked = s.mode_camera;
   $("set-rooms").checked = s.rooms_enabled;
+  $("set-feat-mute").checked = s.feature_mute;
+  $("set-feat-cam").checked = s.feature_camera_toggle;
+  $("set-feat-share").checked = s.feature_screenshare;
+  $("set-feat-chat").checked = s.feature_chat;
+  $("set-role-swap").checked = s.role_swap_enabled;
+  $("set-rematch").checked = s.rematch_priority;
+  $("set-topic-mode").value = s.lobby_topic_mode;
+  $("set-topic-text").value = s.lobby_topic_text;
+  $("set-topic-pool").value = s.topic_pool;
+  $("set-survey-questions").value = s.survey_questions;
 }
 
 $("admin-settings-form").onsubmit = async (e) => {
@@ -1952,6 +2284,16 @@ $("admin-settings-form").onsubmit = async (e) => {
       mode_still: $("set-mode-still").checked,
       mode_camera: $("set-mode-camera").checked,
       rooms_enabled: $("set-rooms").checked,
+      feature_mute: $("set-feat-mute").checked,
+      feature_camera_toggle: $("set-feat-cam").checked,
+      feature_screenshare: $("set-feat-share").checked,
+      feature_chat: $("set-feat-chat").checked,
+      role_swap_enabled: $("set-role-swap").checked,
+      rematch_priority: $("set-rematch").checked,
+      lobby_topic_mode: $("set-topic-mode").value,
+      lobby_topic_text: $("set-topic-text").value.trim(),
+      topic_pool: $("set-topic-pool").value.trim(),
+      survey_questions: $("set-survey-questions").value.trim(),
     });
     sessionMinutes = parseInt($("set-minutes").value, 10);
     $("admin-settings-msg").textContent = "保存しました";
@@ -1959,6 +2301,54 @@ $("admin-settings-form").onsubmit = async (e) => {
     $("admin-settings-msg").textContent = err.message;
   }
 };
+
+// --- 通報キュー(サイト管理者) ---
+async function loadAdminReports() {
+  const rows = await api("/api/reports");
+  $("report-rows").innerHTML = rows.length
+    ? rows
+        .map(
+          (r) => `<tr>
+            <td>${parseUTC(r.created_at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+            <td>${escapeHtml(r.reporter)}</td>
+            <td>${escapeHtml(r.reported)}</td>
+            <td>${escapeHtml(r.reason)}</td>
+            <td>${r.status === "open" ? '<span class="role-tag speaker">未対応</span>' : "対応済み"}</td>
+            <td class="admin-actions">
+              ${r.status === "open" ? `<button class="btn-text" data-resolve="${r.id}">対応済みにする</button>` : ""}
+              <button class="btn-text danger" data-warn-from-report="${r.reported_id}" data-name="${escapeHtml(r.reported)}">警告</button>
+            </td>
+          </tr>`
+        )
+        .join("")
+    : '<tr><td colspan="6" class="empty-note">通報はありません</td></tr>';
+  $("report-rows").querySelectorAll("[data-resolve]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/reports/${btn.dataset.resolve}`, "PUT", { status: "resolved" });
+        await loadAdminReports();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
+  });
+  $("report-rows").querySelectorAll("[data-warn-from-report]").forEach((btn) => {
+    btn.onclick = () => issueWarning(parseInt(btn.dataset.warnFromReport, 10), btn.dataset.name, loadAdminReports);
+  });
+}
+
+/* 警告文を発令する(サイト管理者・チームリーダー共通) */
+async function issueWarning(userId, name, after) {
+  const message = prompt(`「${name}」への警告文を入力してください。\n次回ログイン時にポップアップで表示されます。`);
+  if (!message || !message.trim()) return;
+  try {
+    await api("/api/warnings", "POST", { user_id: userId, message: message.trim() });
+    alert("警告を発令しました。対象ユーザーのログイン時に表示されます。");
+    if (after) await after();
+  } catch (err) {
+    alert(err.message);
+  }
+}
 
 // --- CSV一括登録 ---
 $("btn-bulk-users").onclick = async () => {
@@ -2199,6 +2589,215 @@ $("admin-announce-form").onsubmit = async (e) => {
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
+};
+
+// ---- 汎用モーダル ---------------------------------------------------------------
+function openModal(title, bodyHtml, actions) {
+  $("modal-title").textContent = title;
+  $("modal-body").innerHTML = bodyHtml;
+  $("modal-actions").innerHTML = "";
+  for (const act of actions) {
+    const btn = document.createElement("button");
+    btn.className = act.primary ? "btn-primary" : "btn-secondary";
+    btn.textContent = act.label;
+    btn.onclick = act.onClick;
+    $("modal-actions").appendChild(btn);
+  }
+  $("modal").classList.remove("hidden");
+}
+
+function closeModal() {
+  $("modal").classList.add("hidden");
+}
+
+// ---- 警告ポップアップ(ログイン時) -------------------------------------------------
+async function checkWarnings() {
+  try {
+    const warnings = await api("/api/warnings/pending");
+    if (warnings.length) showWarningModal(warnings, 0);
+  } catch { /* 表示できなくても操作は止めない */ }
+}
+
+function showWarningModal(warnings, idx) {
+  const w = warnings[idx];
+  openModal(
+    "⚠️ 運営からの警告",
+    `<p class="warning-message">${escapeHtml(w.message)}</p>
+     <p class="note">${parseUTC(w.created_at).toLocaleString("ja-JP")}</p>`,
+    [
+      {
+        label: "確認しました",
+        primary: true,
+        onClick: async () => {
+          try { await api(`/api/warnings/${w.id}/ack`, "POST"); } catch {}
+          if (idx + 1 < warnings.length) {
+            showWarningModal(warnings, idx + 1);
+          } else {
+            closeModal();
+          }
+        },
+      },
+    ]
+  );
+}
+
+// ---- 通報・ブロック -------------------------------------------------------------
+async function reportPeer() {
+  if (!lastCallId) return;
+  const reason = prompt("通報の理由を入力してください（運営とチームリーダーが確認します）");
+  if (!reason || !reason.trim()) return;
+  try {
+    await api("/api/reports", "POST", { call_id: lastCallId, reason: reason.trim() });
+    alert("通報を受け付けました。ご協力ありがとうございます。");
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+$("btn-report-call").onclick = reportPeer;
+$("btn-report-survey").onclick = reportPeer;
+
+$("btn-block-survey").onclick = async () => {
+  if (!lastCallId) return;
+  if (!confirm("この相手をブロックします。今後マッチングされなくなります。よろしいですか？")) return;
+  try {
+    await api("/api/blocks", "POST", { call_id: lastCallId });
+    alert("ブロックしました。今後この相手とはマッチングされません。");
+  } catch (err) {
+    alert(err.message);
+  }
+};
+
+// ---- マッチ成立の通知音 -----------------------------------------------------------
+function playMatchSound() {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    osc.frequency.value = 880;
+    gain.gain.value = 0.08;
+    osc.start();
+    osc.frequency.setValueAtTime(1175, ac.currentTime + 0.12);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.45);
+    osc.stop(ac.currentTime + 0.5);
+  } catch { /* 音が出なくても支障なし */ }
+}
+
+// ---- カメラ・マイク・アバターのテスト ----------------------------------------------
+let testStream = null;
+let testLoopId = null;
+let testAudioCtx = null;
+
+function mediaConstraints() {
+  const cam = localStorage.getItem("vm_cam");
+  const mic = localStorage.getItem("vm_mic");
+  return {
+    video: cam ? { deviceId: { ideal: cam } } : true,
+    audio: mic ? { deviceId: { ideal: mic } } : true,
+  };
+}
+
+async function openDeviceTest() {
+  $("device-error").textContent = "";
+  $("test-avatar-name").textContent = AVATARS[avatarType].label;
+  $("device-overlay").classList.remove("hidden");
+  await startDeviceTest();
+  await populateDeviceLists();
+}
+
+async function populateDeviceLists() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const fill = (sel, kind, storedKey) => {
+    const stored = localStorage.getItem(storedKey) || "";
+    const list = devices.filter((d) => d.kind === kind);
+    sel.innerHTML = list
+      .map((d, i) => `<option value="${d.deviceId}">${escapeHtml(d.label || `${kind === "videoinput" ? "カメラ" : "マイク"}${i + 1}`)}</option>`)
+      .join("");
+    if (list.some((d) => d.deviceId === stored)) sel.value = stored;
+  };
+  fill($("sel-cam"), "videoinput", "vm_cam");
+  fill($("sel-mic"), "audioinput", "vm_mic");
+}
+
+async function startDeviceTest() {
+  stopDeviceTest(false);
+  try {
+    testStream = await navigator.mediaDevices.getUserMedia(mediaConstraints());
+  } catch {
+    $("device-error").textContent = "カメラ・マイクを利用できませんでした。ブラウザの設定を確認してください。";
+    return;
+  }
+  const avatarMode = $("test-avatar-mode").checked;
+  $("test-video").classList.toggle("hidden", avatarMode);
+  $("test-canvas").classList.toggle("hidden", !avatarMode);
+
+  // マイクレベルメーター
+  testAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const analyser = testAudioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  testAudioCtx.createMediaStreamSource(testStream).connect(analyser);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+
+  if (avatarMode) {
+    // アバターでプレビュー(通話と同じトラッキングパイプライン)
+    const trackVideo = document.createElement("video");
+    trackVideo.muted = true;
+    trackVideo.playsInline = true;
+    trackVideo.srcObject = new MediaStream(testStream.getVideoTracks());
+    await trackVideo.play().catch(() => {});
+    await loadFaceLandmarker();
+    const ctx = $("test-canvas").getContext("2d");
+    let lastTime = -1;
+    const tick = () => {
+      if (faceLandmarker && trackVideo.readyState >= 2 && trackVideo.currentTime !== lastTime) {
+        lastTime = trackVideo.currentTime;
+        try {
+          updateFaceFromResult(faceLandmarker.detectForVideo(trackVideo, performance.now()));
+        } catch {}
+      }
+      for (const k of Object.keys(faceCur)) faceCur[k] += (faceTgt[k] - faceCur[k]) * 0.35;
+      const type = AVATARS[avatarType].mode === "toon" ? avatarType : "maru";
+      drawAvatarOn(ctx, 512, 320, type, avatarColorRole(), faceCur);
+      analyser.getByteFrequencyData(buf);
+      const vol = buf.reduce((a, b) => a + b, 0) / buf.length / 255;
+      $("mic-level").style.width = `${Math.min(100, vol * 300)}%`;
+      testLoopId = requestAnimationFrame(tick);
+    };
+    tick();
+  } else {
+    $("test-video").srcObject = testStream;
+    const tick = () => {
+      analyser.getByteFrequencyData(buf);
+      const vol = buf.reduce((a, b) => a + b, 0) / buf.length / 255;
+      $("mic-level").style.width = `${Math.min(100, vol * 300)}%`;
+      testLoopId = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+}
+
+function stopDeviceTest(hide = true) {
+  if (testLoopId) { cancelAnimationFrame(testLoopId); testLoopId = null; }
+  if (testStream) { testStream.getTracks().forEach((t) => t.stop()); testStream = null; }
+  if (testAudioCtx) { testAudioCtx.close().catch(() => {}); testAudioCtx = null; }
+  $("test-video").srcObject = null;
+  $("mic-level").style.width = "0%";
+  if (hide) $("device-overlay").classList.add("hidden");
+}
+
+$("btn-device-test").onclick = openDeviceTest;
+$("btn-device-test2").onclick = openDeviceTest;
+$("btn-device-close").onclick = () => stopDeviceTest(true);
+$("test-avatar-mode").onchange = () => startDeviceTest();
+$("sel-cam").onchange = () => {
+  localStorage.setItem("vm_cam", $("sel-cam").value);
+  startDeviceTest();
+};
+$("sel-mic").onchange = () => {
+  localStorage.setItem("vm_mic", $("sel-mic").value);
+  startDeviceTest();
 };
 
 // ---- システム管理画面(システム管理者のみ) ----------------------------------------
