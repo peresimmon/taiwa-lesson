@@ -576,6 +576,122 @@ def test_teams(users, admin_headers):
     check("削除後は一覧から消える", all(t["id"] != tid for t in r.json()), r.text)
 
 
+async def test_rooms(users, admin_headers):
+    print("[12] ルーム・モデレータ")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}
+    suffix = secrets.token_hex(3)
+
+    # 一般ユーザーはルーム作成不可 → モデレータに昇格すると可能
+    r = requests.post(f"{BASE}/api/rooms", headers=h0, json={"name": "もぐりルーム"})
+    check("一般ユーザーはルーム作成不可", r.status_code == 403, r.text)
+    r = requests.get(f"{BASE}/api/me", headers=h0)
+    uid0 = r.json()["id"]
+    r = requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "moderator"})
+    check("モデレータに昇格", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/me", headers=h0)
+    check("ロールがmoderatorになる", r.json()["role"] == "moderator", r.text)
+
+    # ルーム作成(合言葉+定員2+役割なし上書き+セッション5分+表示モード上書き)
+    r = requests.post(f"{BASE}/api/rooms", headers=h0, json={
+        "name": f"雑談ルーム_{suffix}", "passphrase": "himitsu", "capacity": 2,
+        "session_minutes": 5, "role_matching": False, "modes": ["toon", "still"],
+    })
+    check("モデレータがルーム作成", r.status_code == 201, r.text)
+    rid = r.json()["id"]
+
+    r = requests.get(f"{BASE}/api/rooms", headers=h1)
+    rooms = r.json()
+    room = next((x for x in rooms if x["id"] == rid), None)
+    check("ルーム一覧に出る", room is not None, rooms)
+    check("有効設定が返る(上書き反映)",
+          room["has_passphrase"] and room["session_minutes"] == 5
+          and room["role_matching"] is False and room["modes"]["toon"] and not room["modes"]["real"], room)
+    check("一般ユーザーに管理権限はない", room["can_manage"] is False, room)
+
+    # 参加: 合言葉が必要。役割なし上書きなのでroleなしで参加できる
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue", "room_id": rid}))
+    err = await recv_type(ws1, "error")
+    check("合言葉なしは拒否", "合言葉" in err["message"], err)
+    await ws1.send(json.dumps({"type": "join_queue", "room_id": rid, "passphrase": "himitsu"}))
+    q = await recv_type(ws1, "queued")
+    check("ルームで待機できる(役割なし上書き)", q["role"] == "any" and q["room_id"] == rid, q)
+
+    # ルーム外の通常マッチングとは混ざらない(別ユーザーが通常キューで待機)
+    r = requests.post(f"{BASE}/api/register", json={"username": f"third_{suffix}", "password": "pass123"})
+    third_token = r.json()["token"]
+    ws_norm = await websockets.connect(f"{WS_BASE}/ws?token={third_token}")
+    await ws_norm.send(json.dumps({"type": "join_queue", "role": "listener"}))
+    await recv_type(ws_norm, "queued")
+    try:
+        await recv_type(ws1, "matched", timeout=1.5)
+        check("通常マッチングとは混ざらない", False)
+    except TimeoutError:
+        check("通常マッチングとは混ざらない", True)
+    await ws_norm.close()
+
+    # 同じルームに入った相手とマッチ
+    await ws2.send(json.dumps({"type": "join_queue", "room_id": rid, "passphrase": "himitsu"}))
+    m1 = await recv_type(ws1, "matched")
+    m2 = await recv_type(ws2, "matched")
+    check("ルーム内でマッチング", m1["my_role"] == "any" and m2["my_role"] == "any", f"{m1} / {m2}")
+
+    # 定員2(通話中2人)なので3人目は満員
+    ws3 = await websockets.connect(f"{WS_BASE}/ws?token={third_token}")
+    await ws3.send(json.dumps({"type": "join_queue", "room_id": rid, "passphrase": "himitsu"}))
+    err = await recv_type(ws3, "error")
+    check("定員オーバーは満員", "満員" in err["message"], err)
+    await ws3.close()
+    await ws1.close()
+    await ws2.close()
+
+    # ルーム更新は管理者(作成者)のみ。ルーム管理者を追加すると更新できる
+    upd = {"name": f"雑談ルーム_{suffix}", "passphrase": "", "capacity": 0,
+           "session_minutes": None, "role_matching": None, "modes": None}
+    r = requests.put(f"{BASE}/api/rooms/{rid}", headers=h1, json=upd)
+    check("非管理者は更新不可", r.status_code == 403, r.text)
+    r = requests.post(f"{BASE}/api/rooms/{rid}/managers", headers=h0,
+                      json={"username": users[1]["username"]})
+    check("ルーム管理者を追加", r.status_code == 201, r.text)
+    r = requests.put(f"{BASE}/api/rooms/{rid}", headers=h1, json=upd)
+    check("ルーム管理者は更新できる", r.status_code == 200, r.text)
+
+    # チーム限定ルームは部外者から見えない・入れない
+    r = requests.post(f"{BASE}/api/admin/teams", headers=admin_headers, json={"name": f"限定_{suffix}"})
+    tid = r.json()["id"]
+    requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                  json={"username": users[0]["username"]})
+    r = requests.post(f"{BASE}/api/rooms", headers=h0, json={"name": "チーム部屋", "team_id": tid})
+    trid = r.json()["id"]
+    r = requests.get(f"{BASE}/api/rooms", headers=h1)
+    check("チーム限定ルームは部外者に見えない", all(x["id"] != trid for x in r.json()), r.text)
+    ws4 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws4.send(json.dumps({"type": "join_queue", "room_id": trid}))
+    err = await recv_type(ws4, "error")
+    check("チーム限定ルームに部外者は入れない", "参加できません" in err["message"], err)
+    await ws4.close()
+
+    # ルーム機能オフ
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "rooms_enabled": False})
+    check("ルーム機能オフ", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/rooms", headers=h0)
+    check("オフ時は一覧が空", r.json() == [], r.text)
+    r = requests.post(f"{BASE}/api/rooms", headers=h0, json={"name": "作れない"})
+    check("オフ時は作成不可", r.status_code == 403, r.text)
+    requests.put(f"{BASE}/api/admin/settings", headers=admin_headers, json=DEFAULT_PUT)
+
+    # 後始末: ルーム削除・チーム削除・ロールを戻す
+    r = requests.delete(f"{BASE}/api/rooms/{rid}", headers=h0)
+    check("ルーム削除", r.status_code == 200, r.text)
+    requests.delete(f"{BASE}/api/rooms/{trid}", headers=h0)
+    requests.delete(f"{BASE}/api/admin/teams/{tid}", headers=admin_headers)
+    r = requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
+    check("ロールを戻す", r.status_code == 200, r.text)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -588,6 +704,7 @@ async def main():
     test_multitenant(users, admin_headers)
     await test_phase2_settings(users, admin_headers)
     test_teams(users, admin_headers)
+    await test_rooms(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

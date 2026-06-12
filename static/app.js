@@ -101,6 +101,7 @@ function setLoggedIn(newToken, newUsername, newRole, mustChangePassword) {
 
 /* ロビー(ダッシュボード)を表示し、データを読み込む */
 function showLobby() {
+  activeRoomConfig = null; // ルームの通話設定上書きを解除
   showScreen("lobby");
   loadDashboard();
   ensureWS();
@@ -304,6 +305,7 @@ $("btn-start-matching").onclick = async () => {
     return;
   }
   try {
+    activeRoomConfig = null; // 通常マッチングはサイト設定で行う
     if (!ws) await connectWS();
     wsSend({ type: "join_queue", role: siteConfig.role_matching ? selectedRole : "any" });
   } catch (err) {
@@ -556,9 +558,9 @@ const AVATARS = {
 let avatarType = localStorage.getItem("vm_avatar") || "maru";
 if (!AVATARS[avatarType]) avatarType = "maru";
 
-/* 選択中のアバターがサイト設定で許可されていなければ、許可されたものに切り替える */
+/* 選択中のアバターが許可されていなければ、許可されたものに切り替える */
 function ensureAllowedAvatar() {
-  const modes = siteConfig.modes || { toon: true, real: true, still: true, camera: false };
+  const modes = effectiveModes() || { toon: true, real: true, still: true, camera: false };
   if (modes[AVATARS[avatarType].mode]) return;
   for (const t of ["maru", "hinata", "still", "camera"]) {
     if (modes[AVATARS[t].mode]) {
@@ -1049,7 +1051,7 @@ function updateAvatarModeNote() {
 function renderAvatarPicker() {
   const list = $("avatar-list");
   list.innerHTML = "";
-  const allowed = siteConfig.modes || { toon: true, real: true, still: true, camera: false };
+  const allowed = effectiveModes() || { toon: true, real: true, still: true, camera: false };
   const preview = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0.15, smile: 0.45, brow: 0.1 };
   const groups = [
     ["toon", "デフォルメモード"],
@@ -1191,7 +1193,9 @@ async function flushPendingCandidates() {
 }
 
 function startSessionTimer() {
-  sessionSeconds = sessionMinutes * 60; // サイト設定のセッション時間
+  // ルーム参加中はルームのセッション時間がサイト設定より優先される
+  const minutes = (activeRoomConfig && activeRoomConfig.session_minutes) || sessionMinutes;
+  sessionSeconds = minutes * 60;
   updateTimerDisplay();
   sessionTimer = setInterval(() => {
     sessionSeconds--;
@@ -1297,6 +1301,7 @@ async function loadDashboard() {
     applyMatchingUI();
     renderStats(stats);
     await loadTeams();
+    await loadRooms();
     renderPosts(await fetchPosts());
     await loadEvents();
   } catch (err) {
@@ -1492,6 +1497,183 @@ $("team-invite-form").onsubmit = async (e) => {
   }
 };
 
+// ---- ルーム -------------------------------------------------------------------
+let myRooms = [];
+let activeRoomConfig = null; // 参加中ルームの有効設定(セッション時間・役割・表示モード)
+let editingRoomId = null;    // 編集中のルームID(nullなら新規作成)
+
+/* ルーム参加中はルームの表示モード設定がサイト設定より優先される */
+function effectiveModes() {
+  return (activeRoomConfig && activeRoomConfig.modes) || siteConfig.modes;
+}
+
+async function loadRooms() {
+  const enabled = siteConfig.rooms_enabled;
+  $("rooms-panel").classList.toggle("hidden", !enabled);
+  if (!enabled) return;
+  myRooms = await api("/api/rooms");
+  $("btn-room-new").classList.toggle("hidden", !siteConfig.can_create_rooms);
+  $("room-list").innerHTML = myRooms.length
+    ? myRooms
+        .map(
+          (r) => `<li>
+            <span>${escapeHtml(r.name)}${r.has_passphrase ? " 🔒" : ""}${r.team_name ? ` <span class="role-tag listener">${escapeHtml(r.team_name)}</span>` : ""}</span>
+            <span class="e-user">${r.participants}${r.capacity ? "/" + r.capacity : ""}人
+              <button class="btn-text" data-join="${r.id}">参加</button>
+              ${r.can_manage ? `<button class="btn-text" data-redit="${r.id}">編集</button>
+              <button class="btn-text danger" data-rdelete="${r.id}" data-name="${escapeHtml(r.name)}">削除</button>` : ""}
+            </span>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">ルームはまだありません</li>';
+
+  $("room-list").querySelectorAll("[data-join]").forEach((btn) => {
+    btn.onclick = () => joinRoom(parseInt(btn.dataset.join, 10));
+  });
+  $("room-list").querySelectorAll("[data-redit]").forEach((btn) => {
+    btn.onclick = () => openRoomForm(myRooms.find((r) => r.id === parseInt(btn.dataset.redit, 10)));
+  });
+  $("room-list").querySelectorAll("[data-rdelete]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm(`ルーム「${btn.dataset.name}」を削除します。よろしいですか？`)) return;
+      try {
+        await api(`/api/rooms/${btn.dataset.rdelete}`, "DELETE");
+        await loadRooms();
+      } catch (err) {
+        $("room-error").textContent = err.message;
+      }
+    };
+  });
+}
+
+async function joinRoom(roomId) {
+  $("room-error").textContent = "";
+  const room = myRooms.find((r) => r.id === roomId);
+  if (!room) return;
+  if (room.role_matching && !selectedRole) {
+    $("room-error").textContent = "上の「話し手」「聞き手」から役割を選んでから参加してください";
+    return;
+  }
+  let passphrase = "";
+  if (room.has_passphrase) {
+    passphrase = prompt(`ルーム「${room.name}」の合言葉を入力してください`) || "";
+    if (!passphrase) return;
+  }
+  // ルームの有効設定(セッション時間・表示モード)を通話に適用する
+  activeRoomConfig = {
+    session_minutes: room.session_minutes,
+    role_matching: room.role_matching,
+    modes: room.modes,
+  };
+  try {
+    if (!ws) await connectWS();
+    wsSend({
+      type: "join_queue",
+      role: room.role_matching ? selectedRole : "any",
+      room_id: roomId,
+      passphrase,
+    });
+  } catch (err) {
+    $("room-error").textContent = err.message;
+  }
+}
+
+function openRoomForm(room) {
+  editingRoomId = room ? room.id : null;
+  $("room-form-wrap").classList.remove("hidden");
+  $("room-form-error").textContent = "";
+  $("room-form-title").textContent = room ? `ルームを編集: ${room.name}` : "ルームを作成";
+  $("room-form-submit").textContent = room ? "更新" : "作成";
+  // 見える範囲の選択肢(所属チーム)
+  $("room-team").innerHTML =
+    '<option value="">サイト全体</option>' +
+    myTeams.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}限定</option>`).join("");
+  $("room-name").value = room ? room.name : "";
+  $("room-team").value = room && room.team_id ? String(room.team_id) : "";
+  $("room-pass").value = room && room.raw ? room.raw.passphrase : "";
+  $("room-capacity").value = room ? room.capacity : 0;
+  $("room-expires").value = "";
+  $("room-minutes").value = room && room.raw && room.raw.session_minutes ? room.raw.session_minutes : "";
+  $("room-role-matching").value =
+    room && room.raw && room.raw.role_matching !== null ? String(room.raw.role_matching) : "";
+  const override = !!(room && room.raw && room.raw.modes);
+  $("room-modes-override").checked = override;
+  $("room-modes-list").classList.toggle("hidden", !override);
+  for (const m of ["toon", "real", "still", "camera"]) {
+    $(`room-mode-${m}`).checked = override ? room.raw.modes.includes(m) : m !== "camera";
+  }
+  // ルーム管理者(編集時のみ)
+  $("room-managers-wrap").classList.toggle("hidden", !room);
+  if (room && room.managers) {
+    $("room-manager-list").innerHTML = room.managers.length
+      ? room.managers
+          .map(
+            (m) => `<li><span>${escapeHtml(m.username)}</span>
+              <span class="h-date"><button class="btn-text danger" data-rmgr="${m.user_id}">解除</button></span></li>`
+          )
+          .join("")
+      : '<li class="empty-note">追加のルーム管理者はいません</li>';
+    $("room-manager-list").querySelectorAll("[data-rmgr]").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/api/rooms/${room.id}/managers/${btn.dataset.rmgr}`, "DELETE");
+          await loadRooms();
+          openRoomForm(myRooms.find((r) => r.id === room.id));
+        } catch (err) {
+          $("room-form-error").textContent = err.message;
+        }
+      };
+    });
+  }
+}
+
+$("btn-room-new").onclick = () => openRoomForm(null);
+$("room-form-cancel").onclick = () => $("room-form-wrap").classList.add("hidden");
+$("room-modes-override").onchange = () =>
+  $("room-modes-list").classList.toggle("hidden", !$("room-modes-override").checked);
+
+$("btn-room-manager-add").onclick = async () => {
+  const name = $("room-manager-name").value.trim();
+  if (!name || !editingRoomId) return;
+  try {
+    await api(`/api/rooms/${editingRoomId}/managers`, "POST", { username: name });
+    $("room-manager-name").value = "";
+    await loadRooms();
+    openRoomForm(myRooms.find((r) => r.id === editingRoomId));
+  } catch (err) {
+    $("room-form-error").textContent = err.message;
+  }
+};
+
+$("room-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("room-form-error").textContent = "";
+  const body = {
+    name: $("room-name").value.trim(),
+    team_id: $("room-team").value ? parseInt($("room-team").value, 10) : null,
+    passphrase: $("room-pass").value,
+    capacity: parseInt($("room-capacity").value || "0", 10),
+    expires_hours: $("room-expires").value ? parseInt($("room-expires").value, 10) : null,
+    session_minutes: $("room-minutes").value ? parseInt($("room-minutes").value, 10) : null,
+    role_matching: $("room-role-matching").value === "" ? null : $("room-role-matching").value === "true",
+    modes: $("room-modes-override").checked
+      ? ["toon", "real", "still", "camera"].filter((m) => $(`room-mode-${m}`).checked)
+      : null,
+  };
+  try {
+    if (editingRoomId) {
+      await api(`/api/rooms/${editingRoomId}`, "PUT", body);
+    } else {
+      await api("/api/rooms", "POST", body);
+    }
+    $("room-form-wrap").classList.add("hidden");
+    await loadRooms();
+  } catch (err) {
+    $("room-form-error").textContent = err.message;
+  }
+};
+
 // ---- イベントカレンダー --------------------------------------------------------
 async function loadEvents() {
   const month = `${calYear}-${String(calMonth + 1).padStart(2, "0")}`;
@@ -1628,7 +1810,8 @@ async function loadAdminUsers() {
         <td>${u.session_count}</td>
         <td class="admin-actions">
           <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.username)}">履歴</button>
-          ${isAdmin ? "" : `<button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
+          ${isAdmin ? "" : `<button class="btn-text" data-setrole="${u.id}" data-newrole="${u.role === "moderator" ? "user" : "moderator"}">${u.role === "moderator" ? "モデレータ解除" : "モデレータ化"}</button>
+          <button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
         </td>
       </tr>`;
       }
@@ -1637,6 +1820,16 @@ async function loadAdminUsers() {
 
   $("admin-user-rows").querySelectorAll("[data-history]").forEach((btn) => {
     btn.onclick = () => loadAdminHistory(btn.dataset.history, btn.dataset.name);
+  });
+  $("admin-user-rows").querySelectorAll("[data-setrole]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/admin/users/${btn.dataset.setrole}/role`, "PUT", { role: btn.dataset.newrole });
+        await loadAdminUsers();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
   });
   $("admin-user-rows").querySelectorAll("[data-delete]").forEach((btn) => {
     btn.onclick = async () => {
@@ -1700,6 +1893,7 @@ async function loadAdminSettings() {
   $("set-mode-real").checked = s.mode_real;
   $("set-mode-still").checked = s.mode_still;
   $("set-mode-camera").checked = s.mode_camera;
+  $("set-rooms").checked = s.rooms_enabled;
 }
 
 $("admin-settings-form").onsubmit = async (e) => {
@@ -1721,6 +1915,7 @@ $("admin-settings-form").onsubmit = async (e) => {
       mode_real: $("set-mode-real").checked,
       mode_still: $("set-mode-still").checked,
       mode_camera: $("set-mode-camera").checked,
+      rooms_enabled: $("set-rooms").checked,
     });
     sessionMinutes = parseInt($("set-minutes").value, 10);
     $("admin-settings-msg").textContent = "保存しました";
@@ -1963,6 +2158,7 @@ async function loadSysSites() {
           <li><div class="a-title">マッチング</div><div class="a-body">${s.role_matching ? "話し手×聞き手" : "役割なし"}</div></li>
           <li><div class="a-title">表示</div><div class="a-body">${s.anonymous_mode ? "匿名(ランダムな呼び名)" : "実名(ユーザー名)"}</div></li>
           <li><div class="a-title">表示モード</div><div class="a-body">${modes}</div></li>
+          <li><div class="a-title">ルーム機能</div><div class="a-body">${s.rooms_enabled ? "有効" : "無効"}</div></li>
           <li><div class="a-title">アンケート</div><div class="a-body">${s.survey_enabled ? escapeHtml(s.survey_question) : "なし"}</div></li>`;
       } catch (err) {
         $("sysadmin-error").textContent = err.message;

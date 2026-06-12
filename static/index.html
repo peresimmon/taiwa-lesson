@@ -133,6 +133,66 @@
           <ul id="history-list" class="history-list"></ul>
         </div>
 
+        <div class="panel" id="rooms-panel">
+          <h3>ルーム</h3>
+          <ul id="room-list" class="event-list"></ul>
+          <button id="btn-room-new" class="btn-small hidden">ルームを作成</button>
+          <div id="room-form-wrap" class="hidden">
+            <div class="team-detail-head"><strong id="room-form-title">ルームを作成</strong></div>
+            <form id="room-form">
+              <label>ルーム名
+                <input type="text" id="room-name" required maxlength="100">
+              </label>
+              <label>見える範囲
+                <select id="room-team"><option value="">サイト全体</option></select>
+              </label>
+              <label>入る際の合言葉（空欄で無し）
+                <input type="text" id="room-pass" maxlength="100">
+              </label>
+              <label>定員（0=無制限）
+                <input type="number" id="room-capacity" min="0" max="100" value="0">
+              </label>
+              <label>存在期間（時間。空欄で無期限）
+                <input type="number" id="room-expires" min="1" max="720">
+              </label>
+              <div class="setting-group">
+                <div class="setting-group-title">通話設定の上書き（サイト設定より優先）</div>
+                <label>セッション時間（分。空欄でサイト設定）
+                  <input type="number" id="room-minutes" min="1" max="60">
+                </label>
+                <label>役割マッチング
+                  <select id="room-role-matching">
+                    <option value="">サイト設定に従う</option>
+                    <option value="true">話し手×聞き手</option>
+                    <option value="false">役割なし</option>
+                  </select>
+                </label>
+                <label class="checkbox-label"><input type="checkbox" id="room-modes-override"> 表示モードを上書きする</label>
+                <div id="room-modes-list" class="hidden">
+                  <label class="checkbox-label"><input type="checkbox" id="room-mode-toon" checked> デフォルメ</label>
+                  <label class="checkbox-label"><input type="checkbox" id="room-mode-real" checked> リアル</label>
+                  <label class="checkbox-label"><input type="checkbox" id="room-mode-still" checked> 静止画</label>
+                  <label class="checkbox-label"><input type="checkbox" id="room-mode-camera"> 実映像</label>
+                </div>
+              </div>
+              <div id="room-managers-wrap" class="hidden">
+                <div class="setting-group-title">ルーム管理者（設定を変更できるユーザー）</div>
+                <div class="inline-form">
+                  <input type="text" id="room-manager-name" placeholder="ユーザー名" maxlength="50">
+                  <button type="button" id="btn-room-manager-add" class="btn-small">追加</button>
+                </div>
+                <ul id="room-manager-list" class="history-list"></ul>
+              </div>
+              <div class="btn-row">
+                <button type="submit" class="btn-small" id="room-form-submit">作成</button>
+                <button type="button" id="room-form-cancel" class="btn-text">閉じる</button>
+              </div>
+              <p id="room-form-error" class="error"></p>
+            </form>
+          </div>
+          <p id="room-error" class="error"></p>
+        </div>
+
         <div class="panel">
           <h3>マイチーム</h3>
           <ul id="team-list" class="event-list"></ul>
@@ -304,6 +364,9 @@
               <label class="checkbox-label"><input type="checkbox" id="set-mode-still"> 静止画</label>
               <label class="checkbox-label"><input type="checkbox" id="set-mode-camera"> 実映像（カメラそのまま）</label>
             </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-rooms"> ルーム作成機能を有効にする
+            </label>
             <label class="checkbox-label">
               <input type="checkbox" id="set-survey"> セッション後のアンケートを行う
             </label>

@@ -20,6 +20,8 @@ from .database import (
     Announcement,
     Event,
     Post,
+    Room,
+    RoomManager,
     SessionLocal,
     Setting,
     Site,
@@ -29,6 +31,7 @@ from .database import (
     User,
     get_db,
     init_db,
+    utcnow,
 )
 from .matching import Client, manager
 
@@ -74,7 +77,10 @@ DEFAULT_SETTINGS = {
     "mode_real": "true",     # リアルモードアバター(3D VRM)
     "mode_still": "true",    # 静止画
     "mode_camera": "false",  # 実映像(カメラそのまま)
+    "rooms_enabled": "true",  # ルーム作成機能のオンオフ
 }
+
+VIDEO_MODES = ("toon", "real", "still", "camera")
 
 
 def get_setting(db: Session, site_id: int, key: str) -> str:
@@ -231,6 +237,25 @@ class LeaderIn(BaseModel):
     is_leader: bool
 
 
+class RoleIn(BaseModel):
+    role: str = Field(pattern=r"^(user|moderator)$")
+
+
+class RoomIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    team_id: int | None = None                       # 見える範囲(Noneで全員)
+    passphrase: str = Field(default="", max_length=100)
+    capacity: int = Field(default=0, ge=0, le=100)   # 0=無制限
+    expires_hours: int | None = Field(default=None, ge=1, le=720)  # Noneで無期限
+    session_minutes: int | None = Field(default=None, ge=1, le=60)
+    role_matching: bool | None = None
+    modes: list[str] | None = None  # Noneでサイト設定に従う
+
+
+class RoomManagerIn(BaseModel):
+    username: str = Field(min_length=2, max_length=50)
+
+
 class AnnouncementIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=2000)
@@ -247,6 +272,7 @@ class SettingsIn(BaseModel):
     mode_real: bool = True
     mode_still: bool = True
     mode_camera: bool = False
+    rooms_enabled: bool = True
 
 
 class SiteIn(BaseModel):
@@ -380,6 +406,8 @@ def app_config(user: User = Depends(active_user), db: Session = Depends(get_db))
         "anonymous_mode": get_setting(db, sid, "anonymous_mode") == "true",
         "survey_enabled": get_setting(db, sid, "survey_enabled") == "true",
         "survey_question": get_setting(db, sid, "survey_question") or DEFAULT_SETTINGS["survey_question"],
+        "rooms_enabled": get_setting(db, sid, "rooms_enabled") == "true",
+        "can_create_rooms": _is_moderator(user),
         "modes": {
             "toon": get_setting(db, sid, "mode_toon") == "true",
             "real": get_setting(db, sid, "mode_real") == "true",
@@ -584,6 +612,232 @@ def team_stats(
     return {"members": len(member_ids), "sessions": sessions}
 
 
+# --- ルーム ---------------------------------------------------------------------
+
+
+def _is_moderator(user: User) -> bool:
+    return user.role in ("moderator", "site_admin", "system_admin")
+
+
+def _room_or_404(db: Session, user: User, room_id: int) -> Room:
+    room = db.get(Room, room_id)
+    if room is None or room.site_id != user.site_id or _room_expired(room):
+        raise HTTPException(status_code=404, detail="ルームが存在しません")
+    return room
+
+
+def _room_expired(room: Room) -> bool:
+    return room.expires_at is not None and room.expires_at < utcnow().replace(tzinfo=None)
+
+
+def _can_manage_room(db: Session, user: User, room: Room) -> bool:
+    if _is_site_admin(user) or room.creator_id == user.id:
+        return True
+    return (
+        db.query(RoomManager)
+        .filter(RoomManager.room_id == room.id, RoomManager.user_id == user.id)
+        .first()
+        is not None
+    )
+
+
+def _require_room_manager(db: Session, user: User, room_id: int) -> Room:
+    room = _room_or_404(db, user, room_id)
+    if not _can_manage_room(db, user, room):
+        raise HTTPException(status_code=403, detail="このルームの管理権限がありません")
+    return room
+
+
+def _room_visible(db: Session, user: User, room: Room) -> bool:
+    """チーム限定ルームはメンバー(とサイト管理者)にだけ見える"""
+    if room.team_id is None or _is_site_admin(user):
+        return True
+    return _membership(db, room.team_id, user.id) is not None
+
+
+def _site_modes(db: Session, site_id: int) -> list[str]:
+    return [m for m in VIDEO_MODES if get_setting(db, site_id, f"mode_{m}") == "true"]
+
+
+def _room_payload(db: Session, user: User, room: Room) -> dict:
+    """効果的な設定(ルーム上書き>サイト設定)込みのルーム情報"""
+    sid = user.site_id
+    eff_rm = (
+        room.role_matching
+        if room.role_matching is not None
+        else get_setting(db, sid, "role_matching") == "true"
+    )
+    eff_minutes = room.session_minutes or int(get_setting(db, sid, "session_minutes"))
+    eff_modes = room.modes.split(",") if room.modes else _site_modes(db, sid)
+    can_manage = _can_manage_room(db, user, room)
+    creator = db.get(User, room.creator_id)
+    team = db.get(Team, room.team_id) if room.team_id else None
+    payload = {
+        "id": room.id,
+        "name": room.name,
+        "creator": creator.username if creator else "?",
+        "team_id": room.team_id,
+        "team_name": team.name if team else None,
+        "has_passphrase": bool(room.passphrase),
+        "capacity": room.capacity,
+        "participants": manager.room_participants(sid, room.id),
+        "expires_at": room.expires_at.isoformat() if room.expires_at else None,
+        "session_minutes": eff_minutes,
+        "role_matching": eff_rm,
+        "modes": {m: m in eff_modes for m in VIDEO_MODES},
+        "can_manage": can_manage,
+        # 編集フォーム用の生値(管理者のみ)
+        "raw": {
+            "passphrase": room.passphrase,
+            "session_minutes": room.session_minutes,
+            "role_matching": room.role_matching,
+            "modes": room.modes.split(",") if room.modes else None,
+        } if can_manage else None,
+        "managers": [
+            {"user_id": m.user_id, "username": name}
+            for m, name in db.query(RoomManager, User.username)
+            .join(User, RoomManager.user_id == User.id)
+            .filter(RoomManager.room_id == room.id)
+            .all()
+        ] if can_manage else None,
+    }
+    return payload
+
+
+def _apply_room_settings(db: Session, user: User, room: Room, body: RoomIn) -> None:
+    if body.team_id:
+        _team_or_404(db, user, body.team_id)
+    if body.modes is not None:
+        invalid = [m for m in body.modes if m not in VIDEO_MODES]
+        if invalid or not body.modes:
+            raise HTTPException(status_code=422, detail="表示モードの指定が不正です")
+    room.name = body.name
+    room.team_id = body.team_id
+    room.passphrase = body.passphrase
+    room.capacity = body.capacity
+    if body.expires_hours is not None:
+        from datetime import timedelta
+
+        room.expires_at = utcnow().replace(tzinfo=None) + timedelta(hours=body.expires_hours)
+    else:
+        room.expires_at = None
+    room.session_minutes = body.session_minutes
+    room.role_matching = body.role_matching
+    room.modes = ",".join(body.modes) if body.modes is not None else None
+
+
+@app.get("/api/rooms")
+def list_rooms(user: User = Depends(active_user), db: Session = Depends(get_db)):
+    """見えるルーム一覧(期限切れは削除)。ルーム機能オフのサイトでは空"""
+    if get_setting(db, user.site_id, "rooms_enabled") != "true":
+        return []
+    rooms = db.query(Room).filter(Room.site_id == user.site_id).order_by(Room.id).all()
+    result = []
+    for room in rooms:
+        if _room_expired(room):
+            db.query(RoomManager).filter(RoomManager.room_id == room.id).delete()
+            db.delete(room)
+            continue
+        if _room_visible(db, user, room):
+            result.append(_room_payload(db, user, room))
+    db.commit()
+    return result
+
+
+@app.post("/api/rooms", status_code=201)
+def create_room(
+    body: RoomIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """ルーム作成(モデレータ以上)。作成者は自動的に管理権限を持つ"""
+    if get_setting(db, user.site_id, "rooms_enabled") != "true":
+        raise HTTPException(status_code=403, detail="このサイトではルーム機能は無効です")
+    if not _is_moderator(user):
+        raise HTTPException(status_code=403, detail="ルーム作成にはモデレータ以上の権限が必要です")
+    room = Room(site_id=user.site_id, creator_id=user.id, name=body.name)
+    _apply_room_settings(db, user, room, body)
+    db.add(room)
+    db.commit()
+    return {"ok": True, "id": room.id}
+
+
+@app.put("/api/rooms/{room_id}")
+def update_room(
+    room_id: int,
+    body: RoomIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    room = _require_room_manager(db, user, room_id)
+    _apply_room_settings(db, user, room, body)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/rooms/{room_id}")
+async def delete_room(
+    room_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    room = _require_room_manager(db, user, room_id)
+    site_id = user.site_id
+    db.query(RoomManager).filter(RoomManager.room_id == room.id).delete()
+    db.delete(room)
+    db.commit()
+    await manager.kick_room_queue(site_id, room_id)
+    return {"ok": True}
+
+
+@app.post("/api/rooms/{room_id}/managers", status_code=201)
+def add_room_manager(
+    room_id: int,
+    body: RoomManagerIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """ルーム管理者を追加(設定変更権限を付与)"""
+    room = _require_room_manager(db, user, room_id)
+    target = (
+        db.query(User)
+        .filter(User.site_id == user.site_id, User.username == body.username)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    exists = (
+        db.query(RoomManager)
+        .filter(RoomManager.room_id == room.id, RoomManager.user_id == target.id)
+        .first()
+    )
+    if exists or target.id == room.creator_id:
+        raise HTTPException(status_code=409, detail="既にルーム管理者です")
+    db.add(RoomManager(room_id=room.id, user_id=target.id))
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/rooms/{room_id}/managers/{user_id}")
+def remove_room_manager(
+    room_id: int,
+    user_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    room = _require_room_manager(db, user, room_id)
+    m = (
+        db.query(RoomManager)
+        .filter(RoomManager.room_id == room.id, RoomManager.user_id == user_id)
+        .first()
+    )
+    if m is None:
+        raise HTTPException(status_code=404, detail="ルーム管理者ではありません")
+    db.delete(m)
+    db.commit()
+    return {"ok": True}
+
+
 # --- ダッシュボード(お知らせ・イベント・掲示板・統計) ---------------------------
 
 
@@ -759,6 +1013,24 @@ def admin_create_user(
     return {"ok": True, "id": user.id}
 
 
+@app.put("/api/admin/users/{user_id}/role")
+def admin_set_role(
+    user_id: int,
+    body: RoleIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    """一般ユーザー⇔モデレータの切替(サイト管理者のみ)"""
+    target = db.get(User, user_id)
+    if target is None or target.site_id != admin.site_id:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    if target.role in ("site_admin", "system_admin"):
+        raise HTTPException(status_code=400, detail="管理者のロールは変更できません")
+    target.role = body.role
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/admin/users/{user_id}/surveys")
 def admin_user_surveys(
     user_id: int,
@@ -827,6 +1099,7 @@ def _settings_payload(db: Session, site_id: int) -> dict:
         "mode_real": flag("mode_real"),
         "mode_still": flag("mode_still"),
         "mode_camera": flag("mode_camera"),
+        "rooms_enabled": flag("rooms_enabled"),
     }
 
 
@@ -847,7 +1120,7 @@ def admin_put_settings(
     set_setting(db, sid, "session_minutes", str(body.session_minutes))
     for key in (
         "allow_registration", "role_matching", "anonymous_mode", "survey_enabled",
-        "mode_toon", "mode_real", "mode_still", "mode_camera",
+        "mode_toon", "mode_real", "mode_still", "mode_camera", "rooms_enabled",
     ):
         set_setting(db, sid, key, "true" if getattr(body, key) else "false")
     set_setting(db, sid, "survey_question",
@@ -1093,19 +1366,41 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
             msg = await ws.receive_json()
             msg_type = msg.get("type")
             if msg_type == "join_queue":
-                # サイト設定(役割マッチング・匿名)を待機開始の度に反映する
+                # サイト設定・ルーム設定を待機開始の度に反映する
+                room_id = int(msg.get("room_id") or 0)
+                join_error = None
                 sdb = SessionLocal()
                 try:
                     role_matching = get_setting(sdb, user.site_id, "role_matching") == "true"
                     client.anonymous = get_setting(sdb, user.site_id, "anonymous_mode") == "true"
+                    if room_id:
+                        room = sdb.get(Room, room_id)
+                        if (
+                            room is None
+                            or room.site_id != user.site_id
+                            or _room_expired(room)
+                            or get_setting(sdb, user.site_id, "rooms_enabled") != "true"
+                        ):
+                            join_error = "ルームが見つかりません"
+                        elif not _room_visible(sdb, user, room):
+                            join_error = "このルームには参加できません"
+                        elif room.passphrase and (msg.get("passphrase") or "") != room.passphrase:
+                            join_error = "合言葉が違います"
+                        elif room.capacity and manager.room_participants(user.site_id, room_id) >= room.capacity:
+                            join_error = "このルームは満員です"
+                        elif room.role_matching is not None:
+                            role_matching = room.role_matching  # ルーム設定がサイト設定より優先
                 finally:
                     sdb.close()
+                if join_error:
+                    await client.send({"type": "error", "message": join_error})
+                    continue
                 role = msg.get("role") or ""
                 if not role_matching:
                     role = "any"
                 elif role == "any":
                     role = ""  # 役割マッチング有効時にanyは指定できない
-                await manager.join_queue(client, role)
+                await manager.join_queue(client, role, room_id)
             elif msg_type == "cancel_queue":
                 await manager.cancel_queue(client)
             elif msg_type == "consent":

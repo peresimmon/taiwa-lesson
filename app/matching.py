@@ -49,6 +49,8 @@ class Client:
         self.role: str | None = None      # 待機〜セッション中の役割
         self.nickname: str | None = None  # セッション限定のランダムな呼び名
         self.anonymous = True             # False=実名(ユーザー名)で表示するサイト
+        self.queue_room = 0               # 待機中のルームID(0=通常マッチング)
+        self.active_room_id = 0           # 通話中のルームID(定員カウント用)
 
     async def send(self, payload: dict) -> None:
         try:
@@ -74,22 +76,34 @@ class Room:
 class MatchingManager:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
-        # (site_id, role) -> 待機中クライアント。サイトをまたいだマッチングはしない
-        self.waiting: dict[tuple[int, str], list[Client]] = {}
+        # (site_id, room_id, role) -> 待機中クライアント。サイト・ルームをまたいだマッチングはしない
+        self.waiting: dict[tuple[int, int, str], list[Client]] = {}
         self.clients: dict[int, Client] = {}
 
-    def _queue(self, site_id: int, role: str) -> list[Client]:
-        return self.waiting.setdefault((site_id, role), [])
+    def _queue(self, site_id: int, room_id: int, role: str) -> list[Client]:
+        return self.waiting.setdefault((site_id, room_id, role), [])
 
-    def waiting_counts(self, site_id: int) -> dict[str, int]:
+    def waiting_counts(self, site_id: int, room_id: int = 0) -> dict[str, int]:
         return {
-            "speakers": len(self._queue(site_id, ROLE_SPEAKER)),
-            "listeners": len(self._queue(site_id, ROLE_LISTENER)),
-            "any": len(self._queue(site_id, ROLE_ANY)),
+            "speakers": len(self._queue(site_id, room_id, ROLE_SPEAKER)),
+            "listeners": len(self._queue(site_id, room_id, ROLE_LISTENER)),
+            "any": len(self._queue(site_id, room_id, ROLE_ANY)),
         }
 
     def online_count(self, site_id: int) -> int:
         return sum(1 for c in self.clients.values() if c.site_id == site_id)
+
+    def room_participants(self, site_id: int, room_id: int) -> int:
+        """ルームの現在人数(待機中+そのルーム発の通話中)。定員チェック用"""
+        waiting = sum(
+            len(q) for (sid, rid, _), q in self.waiting.items()
+            if sid == site_id and rid == room_id
+        )
+        active = sum(
+            1 for c in self.clients.values()
+            if c.site_id == site_id and c.room is not None and c.active_room_id == room_id
+        )
+        return waiting + active
 
     def _in_queue(self, client: Client) -> bool:
         return any(client in queue for queue in self.waiting.values())
@@ -117,7 +131,7 @@ class MatchingManager:
 
     # --- マッチング ---------------------------------------------------------
 
-    async def join_queue(self, client: Client, role: str) -> None:
+    async def join_queue(self, client: Client, role: str, room_id: int = 0) -> None:
         if role not in ROLES:
             await client.send({"type": "error", "message": "「話し手」か「聞き手」を選んでください"})
             return
@@ -125,25 +139,38 @@ class MatchingManager:
             if client.room is not None or self._in_queue(client):
                 return
             client.role = role
+            client.queue_room = room_id
             # 相手となる待機列: 役割ありなら反対の役割、役割なしなら同じ"any"の列
             if role == ROLE_ANY:
-                partner_queue = self._queue(client.site_id, ROLE_ANY)
+                partner_queue = self._queue(client.site_id, room_id, ROLE_ANY)
             else:
                 opposite = ROLE_LISTENER if role == ROLE_SPEAKER else ROLE_SPEAKER
-                partner_queue = self._queue(client.site_id, opposite)
+                partner_queue = self._queue(client.site_id, room_id, opposite)
             if partner_queue:
                 partner = random.choice(partner_queue)
                 partner_queue.remove(partner)
                 await self._create_room(client, partner)
             else:
-                self._queue(client.site_id, role).append(client)
-                await client.send({"type": "queued", "role": role})
+                self._queue(client.site_id, room_id, role).append(client)
+                await client.send({"type": "queued", "role": role, "room_id": room_id})
+
+    async def kick_room_queue(self, site_id: int, room_id: int) -> None:
+        """ルーム削除時に待機中のクライアントを待機解除する"""
+        async with self.lock:
+            for (sid, rid, _), queue in list(self.waiting.items()):
+                if sid != site_id or rid != room_id:
+                    continue
+                for client in list(queue):
+                    queue.remove(client)
+                    await client.send({"type": "error", "message": "ルームが削除されました"})
 
     async def _create_room(self, a: Client, b: Client) -> None:
         """部屋を作り、セッション限定の呼び名を割り振って双方に通知する(lock取得済みで呼ぶこと)"""
         room = Room(secrets.token_hex(16), a, b)
         a.room = room
         b.room = room
+        a.active_room_id = a.queue_room
+        b.active_room_id = b.queue_room
         if a.anonymous:
             # 匿名サイト: セッション限定のランダムな呼び名
             a.nickname, b.nickname = random.sample(NICKNAMES, 2)
@@ -210,6 +237,7 @@ class MatchingManager:
         peer = room.peer_of(client)
         for member in room.members.values():
             member.room = None
+            member.active_room_id = 0
         if peer is not None:
             await peer.send({"type": notify_type})
 

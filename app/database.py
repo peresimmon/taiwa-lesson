@@ -131,6 +131,41 @@ class TeamMember(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Room(Base):
+    """ルーム(通常マッチングとは別の、ルームごとのマッチング場)
+
+    通話設定(セッション時間・役割・表示モード)はサイト設定より優先される。
+    NULLの項目はサイト設定に従う。
+    """
+
+    __tablename__ = "rooms"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)  # 見える範囲(NULL=全員)
+    passphrase: Mapped[str] = mapped_column(String(100), default="")  # 入る際の合言葉(空=無し)
+    capacity: Mapped[int] = mapped_column(Integer, default=0)  # 定員(0=無制限)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 存在期間(NULL=無期限)
+    session_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    role_matching: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    modes: Mapped[str | None] = mapped_column(String(100), nullable=True)  # "toon,real"等のCSV
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RoomManager(Base):
+    """ルーム管理者(ルーム設定を変更できるユーザー)"""
+
+    __tablename__ = "room_managers"
+    __table_args__ = (UniqueConstraint("room_id", "user_id", name="uq_room_managers"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Setting(Base):
     """サイトごとの設定(キー・バリュー)"""
 
