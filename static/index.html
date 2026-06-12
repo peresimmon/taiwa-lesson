@@ -77,8 +77,8 @@
         <div class="hero-right">
           <div class="stats">
             <div class="stat"><span id="stat-online">-</span><small>オンライン</small></div>
-            <div class="stat"><span id="stat-speakers">-</span><small>話し手 待機</small></div>
-            <div class="stat"><span id="stat-listeners">-</span><small>聞き手 待機</small></div>
+            <div class="stat" id="stat-box-speakers"><span id="stat-speakers">-</span><small id="stat-speakers-label">話し手 待機</small></div>
+            <div class="stat" id="stat-box-listeners"><span id="stat-listeners">-</span><small>聞き手 待機</small></div>
             <div class="stat"><span id="stat-users">-</span><small>登録者</small></div>
           </div>
           <div class="role-select">
@@ -147,9 +147,9 @@
     <!-- 対話のルール（同意画面） -->
     <section id="screen-consent" class="screen card hidden">
       <h2>相手が見つかりました</h2>
-      <p>お相手: <strong id="consent-peer"></strong> さん（<span id="consent-peer-role"></span>）</p>
-      <p>あなたの呼び名: <strong id="consent-my-name"></strong>（<span id="consent-my-role"></span>）</p>
-      <p class="note">呼び名はこのセッション限定でランダムに割り振られます。本名やユーザー名は相手に伝わりません。カメラ映像は顔の動きの読み取りだけに使い、相手の画面にはアバター（キャラクター）のみが表示されます。</p>
+      <p>お相手: <strong id="consent-peer"></strong> さん<span id="consent-peer-role"></span></p>
+      <p><span id="consent-my-label">あなたの呼び名</span>: <strong id="consent-my-name"></strong><span id="consent-my-role"></span></p>
+      <p class="note" id="consent-note">呼び名はこのセッション限定でランダムに割り振られます。本名やユーザー名は相手に伝わりません。</p>
       <div class="consent-box">
         <h3>対話のルール</h3>
         <ul>
@@ -161,8 +161,9 @@
         </ul>
       </div>
       <div class="avatar-select">
-        <h3>アバターを選ぶ</h3>
+        <h3>表示モードを選ぶ</h3>
         <div id="avatar-list" class="avatar-list"></div>
+        <p id="avatar-mode-note" class="note"></p>
       </div>
       <p>双方が同意した場合のみ、対話セッションが始まります。</p>
       <div class="btn-row">
@@ -207,7 +208,7 @@
       <h2>セッションおつかれさまでした</h2>
       <p>今回の対話を振り返ってみましょう。</p>
       <form id="survey-form">
-        <label>相手の話を「聴けた」と感じましたか？</label>
+        <label id="survey-question">相手の話を「聴けた」と感じましたか？</label>
         <div class="stars" id="star-rating">
           <input type="radio" name="rating" value="5" id="star5"><label for="star5">★</label>
           <input type="radio" name="rating" value="4" id="star4"><label for="star4">★</label>
@@ -271,7 +272,26 @@
               <input type="number" id="set-minutes" min="1" max="60" required>
             </label>
             <label class="checkbox-label">
-              <input type="checkbox" id="set-registration"> 新規ユーザー登録を許可する
+              <input type="checkbox" id="set-registration"> 新規ユーザー登録を許可する（メインサイトのみ有効）
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-role-matching"> 「話し手」「聞き手」に分かれてマッチングする
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-anonymous"> 匿名コミュニケーション（呼び名をランダムに割り当て）
+            </label>
+            <div class="setting-group">
+              <div class="setting-group-title">通話画面で利用できる表示モード</div>
+              <label class="checkbox-label"><input type="checkbox" id="set-mode-toon"> デフォルメモードアバター</label>
+              <label class="checkbox-label"><input type="checkbox" id="set-mode-real"> リアルモードアバター</label>
+              <label class="checkbox-label"><input type="checkbox" id="set-mode-still"> 静止画</label>
+              <label class="checkbox-label"><input type="checkbox" id="set-mode-camera"> 実映像（カメラそのまま）</label>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="set-survey"> セッション後のアンケートを行う
+            </label>
+            <label>アンケートの設問
+              <input type="text" id="set-survey-question" maxlength="300">
             </label>
             <button type="submit" class="btn-small">設定を保存</button>
             <p id="admin-settings-msg" class="note"></p>

@@ -10,6 +10,15 @@ let username = localStorage.getItem("vm_username") || "";
 let userRole = "user";       // "user" | "moderator" | "site_admin" | "system_admin"
 let sessionMinutes = 10;     // サイト設定から取得するセッション時間(分)
 
+// サイト設定(/api/config)。ダッシュボード表示時に取得して反映する
+let siteConfig = {
+  role_matching: true,
+  anonymous_mode: true,
+  survey_enabled: true,
+  survey_question: "相手の話を「聴けた」と感じましたか？",
+  modes: { toon: true, real: true, still: true, camera: false },
+};
+
 // "/login" はサブサイト(企業向け)のログインページ。サイトIDの入力が必要で自己登録は不可
 const IS_SUB_LOGIN = location.pathname === "/login";
 let ws = null;
@@ -33,7 +42,16 @@ const RTC_CONFIG = {
 // ---- ユーティリティ -----------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 
-const roleLabel = (role) => (role === "speaker" ? "話し手" : "聞き手");
+const roleLabel = (role) => (role === "speaker" ? "話し手" : role === "listener" ? "聞き手" : "");
+const roleParen = (role) => (role && role !== "any" ? `（${roleLabel(role)}）` : "");
+
+/* アバターの色分けに使う役割。役割なしのときは呼び名から安定したランダム色 */
+function avatarColorRole() {
+  if (myRole && myRole !== "any") return myRole;
+  let h = 0;
+  for (const ch of myNickname || "") h += ch.charCodeAt(0);
+  return h % 2 ? "speaker" : "listener";
+}
 
 function showScreen(name) {
   document.querySelectorAll(".screen").forEach((el) => el.classList.add("hidden"));
@@ -198,9 +216,14 @@ function wsSend(payload) {
 async function handleWSMessage(msg) {
   switch (msg.type) {
     case "queued": {
-      const opposite = msg.role === "speaker" ? "listener" : "speaker";
-      $("waiting-role").textContent = `あなたの役割: ${roleLabel(msg.role)}`;
-      $("waiting-note").textContent = `${roleLabel(opposite)}の方が見つかり次第、自動的にマッチングされます。`;
+      if (msg.role === "any") {
+        $("waiting-role").textContent = "";
+        $("waiting-note").textContent = "相手が見つかり次第、自動的にマッチングされます。";
+      } else {
+        const opposite = msg.role === "speaker" ? "listener" : "speaker";
+        $("waiting-role").textContent = `あなたの役割: ${roleLabel(msg.role)}`;
+        $("waiting-note").textContent = `${roleLabel(opposite)}の方が見つかり次第、自動的にマッチングされます。`;
+      }
       showScreen("waiting");
       break;
     }
@@ -212,13 +235,18 @@ async function handleWSMessage(msg) {
       peerRole = msg.peer_role;
       peerNickname = msg.peer_nickname;
       $("consent-peer").textContent = peerNickname;
-      $("consent-peer-role").textContent = roleLabel(peerRole);
+      $("consent-peer-role").textContent = roleParen(peerRole);
       $("consent-my-name").textContent = myNickname;
-      $("consent-my-role").textContent = roleLabel(myRole);
+      $("consent-my-role").textContent = roleParen(myRole);
+      $("consent-my-label").textContent = siteConfig.anonymous_mode ? "あなたの呼び名" : "あなたの表示名";
+      $("consent-note").textContent = siteConfig.anonymous_mode
+        ? "呼び名はこのセッション限定でランダムに割り振られます。本名やユーザー名は相手に伝わりません。"
+        : "このサイトではユーザー名がそのまま相手に表示されます。";
       $("consent-status").textContent = "";
       $("btn-consent-ok").disabled = false;
       $("btn-consent-ng").disabled = false;
-      loadFaceLandmarker(); // 同意画面の間にモデルを先読みしておく
+      ensureAllowedAvatar();
+      if (["toon", "real"].includes(AVATARS[avatarType].mode)) loadFaceLandmarker(); // 先読み
       if (AVATARS[avatarType].mode === "real") loadVRM(avatarType);
       renderAvatarPicker();
       showScreen("consent");
@@ -271,13 +299,13 @@ $("role-listener").onclick = () => selectRole("listener");
 
 $("btn-start-matching").onclick = async () => {
   $("lobby-error").textContent = "";
-  if (!selectedRole) {
+  if (siteConfig.role_matching && !selectedRole) {
     $("lobby-error").textContent = "「話し手」か「聞き手」を選んでください";
     return;
   }
   try {
     if (!ws) await connectWS();
-    wsSend({ type: "join_queue", role: selectedRole });
+    wsSend({ type: "join_queue", role: siteConfig.role_matching ? selectedRole : "any" });
   } catch (err) {
     $("lobby-error").textContent = err.message;
   }
@@ -367,10 +395,30 @@ function loadFaceLandmarker() {
 }
 
 async function buildAvatarStream() {
+  ensureAllowedAvatar();
+  const mode = AVATARS[avatarType].mode;
+
+  if (mode === "camera") {
+    // 実映像: カメラ映像をそのまま送る(顔解析もアバター描画もしない)
+    return rawStream;
+  }
+
   avatarCanvas = document.createElement("canvas");
   avatarCanvas.width = 512;
   avatarCanvas.height = 320; // 表示エリアと同じ16:10(クロップによる頭の見切れを防ぐ)
   avatarCtx = avatarCanvas.getContext("2d");
+
+  if (mode === "still") {
+    // 静止画: 呼び名のカードを描いて音声のみで対話する
+    const tick = () => {
+      drawStillOn(avatarCtx, avatarCanvas.width, avatarCanvas.height, myNickname, avatarColorRole());
+      avatarLoop = requestAnimationFrame(tick);
+    };
+    tick();
+    const stream = avatarCanvas.captureStream(5);
+    rawStream.getAudioTracks().forEach((t) => stream.addTrack(t));
+    return stream;
+  }
 
   // トラッキング用の非表示video。画面にもネットワークにも出さない
   const trackVideo = document.createElement("video");
@@ -381,7 +429,7 @@ async function buildAvatarStream() {
 
   await loadFaceLandmarker();
   if (!faceLandmarker) setupAudioFallback();
-  if (AVATARS[avatarType].mode === "real") {
+  if (mode === "real") {
     await activateVRM(avatarType); // 失敗してもデフォルメ表示にフォールバックして続行
   }
 
@@ -390,6 +438,28 @@ async function buildAvatarStream() {
   const stream = avatarCanvas.captureStream(24);
   rawStream.getAudioTracks().forEach((t) => stream.addTrack(t));
   return stream;
+}
+
+/* 静止画モード: ブランド背景+イニシャルの丸+呼び名のカード */
+function drawStillOn(ctx, W, H, name, role) {
+  drawAvatarBackground(ctx, W, H);
+  const main = role === "speaker" ? "#ee6c4d" : "#3d5a80";
+  ctx.fillStyle = main;
+  ctx.beginPath();
+  ctx.arc(W / 2, H * 0.4, H * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = `bold ${Math.round(H * 0.18)}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText((name || "？").slice(0, 1), W / 2, H * 0.41);
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#293241";
+  ctx.font = `${Math.round(H * 0.08)}px sans-serif`;
+  ctx.fillText(name || "", W / 2, H * 0.78);
+  ctx.fillStyle = "rgba(41, 50, 65, 0.55)";
+  ctx.font = `${Math.round(H * 0.055)}px sans-serif`;
+  ctx.fillText("音声で対話中", W / 2, H * 0.88);
 }
 
 function setupAudioFallback() {
@@ -480,9 +550,23 @@ const AVATARS = {
   takeru: { label: "たける", mode: "real", url: "models/avatar_masc.vrm", thumb: "models/thumbs/avatar_masc.jpg" },
   ren: { label: "れん", mode: "real", url: "models/avatar_sample_c.vrm", thumb: "models/thumbs/avatar_sample_c.jpg" },
   seed: { label: "シード", mode: "real", url: "models/avatar_seed.vrm", thumb: "models/thumbs/avatar_seed.jpg" },
+  still: { label: "静止画", mode: "still" },
+  camera: { label: "実映像", mode: "camera" },
 };
 let avatarType = localStorage.getItem("vm_avatar") || "maru";
 if (!AVATARS[avatarType]) avatarType = "maru";
+
+/* 選択中のアバターがサイト設定で許可されていなければ、許可されたものに切り替える */
+function ensureAllowedAvatar() {
+  const modes = siteConfig.modes || { toon: true, real: true, still: true, camera: false };
+  if (modes[AVATARS[avatarType].mode]) return;
+  for (const t of ["maru", "hinata", "still", "camera"]) {
+    if (modes[AVATARS[t].mode]) {
+      avatarType = t;
+      return;
+    }
+  }
+}
 
 function drawAvatar() {
   const W = avatarCanvas.width, H = avatarCanvas.height;
@@ -494,7 +578,7 @@ function drawAvatar() {
   }
   // デフォルメ(2D)。リアル選択中でも3Dの読み込みが終わるまでは「まる」でつなぐ
   const type = AVATARS[avatarType].mode === "real" ? "maru" : avatarType;
-  drawAvatarOn(avatarCtx, W, H, type, myRole, faceCur);
+  drawAvatarOn(avatarCtx, W, H, type, avatarColorRole(), faceCur);
   if (AVATARS[avatarType].mode === "real") {
     avatarCtx.fillStyle = "rgba(41, 50, 65, 0.7)";
     avatarCtx.font = `${Math.round(H / 24)}px sans-serif`;
@@ -950,24 +1034,45 @@ function drawAvatarOn(ctx, W, H, type, role, f) {
   ctx.restore();
 }
 
-/* 同意画面のアバター選択サムネイルを描画する */
+/* 選択中の表示モードに応じた注意書き */
+function updateAvatarModeNote() {
+  const mode = AVATARS[avatarType].mode;
+  $("avatar-mode-note").textContent =
+    mode === "camera"
+      ? "⚠ 実映像では、あなたのカメラ映像がそのまま相手に表示されます。"
+      : mode === "still"
+        ? "静止画と音声で対話します。カメラ映像は使われません。"
+        : "カメラ映像は顔の動きの読み取りだけに使い、相手にはアバターのみが表示されます。";
+}
+
+/* 同意画面の表示モード選択サムネイルを描画する */
 function renderAvatarPicker() {
   const list = $("avatar-list");
   list.innerHTML = "";
+  const allowed = siteConfig.modes || { toon: true, real: true, still: true, camera: false };
   const preview = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0.15, smile: 0.45, brow: 0.1 };
-  for (const [mode, title] of [["toon", "デフォルメモード"], ["real", "リアルモード"]]) {
+  const groups = [
+    ["toon", "デフォルメモード"],
+    ["real", "リアルモード"],
+    ["other", "その他"],
+  ];
+  for (const [group, title] of groups) {
+    const entries = Object.entries(AVATARS).filter(([, def]) => {
+      const g = def.mode === "toon" || def.mode === "real" ? def.mode : "other";
+      return g === group && allowed[def.mode];
+    });
+    if (!entries.length) continue;
     const heading = document.createElement("div");
     heading.className = "avatar-mode-title";
     heading.textContent = title;
     list.appendChild(heading);
     const row = document.createElement("div");
     row.className = "avatar-row";
-    for (const [type, def] of Object.entries(AVATARS)) {
-      if (def.mode !== mode) continue;
+    for (const [type, def] of entries) {
       const opt = document.createElement("button");
       opt.type = "button";
       opt.className = "avatar-option" + (type === avatarType ? " selected" : "");
-      if (mode === "real") {
+      if (def.mode === "real") {
         // VRMメタ情報から抽出したサムネイル画像
         const img = document.createElement("img");
         img.src = def.thumb;
@@ -979,7 +1084,19 @@ function renderAvatarPicker() {
         const cv = document.createElement("canvas");
         cv.width = 96;
         cv.height = 72;
-        drawAvatarOn(cv.getContext("2d"), 96, 72, type, myRole || "listener", preview);
+        const c2 = cv.getContext("2d");
+        if (def.mode === "still") {
+          drawStillOn(c2, 96, 72, myNickname || "？", avatarColorRole());
+        } else if (def.mode === "camera") {
+          c2.fillStyle = "#293241";
+          c2.fillRect(0, 0, 96, 72);
+          c2.font = "28px sans-serif";
+          c2.textAlign = "center";
+          c2.textBaseline = "middle";
+          c2.fillText("🎥", 48, 36);
+        } else {
+          drawAvatarOn(c2, 96, 72, type, avatarColorRole(), preview);
+        }
         opt.appendChild(cv);
       }
       const label = document.createElement("small");
@@ -990,26 +1107,33 @@ function renderAvatarPicker() {
         localStorage.setItem("vm_avatar", type);
         list.querySelectorAll(".avatar-option").forEach((el) => el.classList.remove("selected"));
         opt.classList.add("selected");
+        updateAvatarModeNote();
         if (def.mode === "real") loadVRM(type); // 3Dモデルを先読み
       };
       row.appendChild(opt);
     }
     list.appendChild(row);
   }
+  updateAvatarModeNote();
 }
 
 // ---- WebRTC通話 -----------------------------------------------------------------
 async function startCall() {
   showScreen("call");
-  // 役割とセッション限定の呼び名を常時表示する
+  // 役割と呼び名を常時表示する(役割なしマッチングでは役割タグを出さない)
+  const hasRoles = myRole !== "any";
   $("call-my-name").textContent = myNickname;
-  $("call-my-role").textContent = roleLabel(myRole);
-  $("call-my-role").className = `role-tag ${myRole}`;
   $("call-peer-name").textContent = peerNickname;
-  $("call-peer-role").textContent = roleLabel(peerRole);
-  $("call-peer-role").className = `role-tag ${peerRole}`;
-  $("remote-label").textContent = `${peerNickname}（${roleLabel(peerRole)}）`;
-  $("local-label").textContent = `${myNickname}（${roleLabel(myRole)}）`;
+  $("call-my-role").classList.toggle("hidden", !hasRoles);
+  $("call-peer-role").classList.toggle("hidden", !hasRoles);
+  if (hasRoles) {
+    $("call-my-role").textContent = roleLabel(myRole);
+    $("call-my-role").className = `role-tag ${myRole}`;
+    $("call-peer-role").textContent = roleLabel(peerRole);
+    $("call-peer-role").className = `role-tag ${peerRole}`;
+  }
+  $("remote-label").textContent = `${peerNickname}${roleParen(peerRole)}`;
+  $("local-label").textContent = `${myNickname}${roleParen(myRole)}`;
   $("call-status").textContent = "接続中…";
   pendingCandidates = [];
 
@@ -1089,7 +1213,14 @@ $("btn-end-call").onclick = () => endCallToSurvey(true);
 function endCallToSurvey(sendLeave) {
   if (sendLeave) wsSend({ type: "leave" });
   cleanupCall(false);
-  // アンケート初期化
+  if (!siteConfig.survey_enabled) {
+    // サイト設定でアンケート無効ならそのままホームへ
+    currentRoomId = "";
+    showLobby();
+    return;
+  }
+  // アンケート初期化(設問はサイト設定に従う)
+  $("survey-question").textContent = siteConfig.survey_question;
   $("star3").checked = true;
   $("survey-again").checked = false;
   $("survey-comment").value = "";
@@ -1162,9 +1293,11 @@ async function loadDashboard() {
     ]);
     renderAnnouncements(announcements);
     renderPosts(posts);
-    renderStats(stats);
     renderHistory(history);
     sessionMinutes = config.session_minutes || 10;
+    siteConfig = config;
+    applyMatchingUI();
+    renderStats(stats);
     await loadEvents();
   } catch (err) {
     $("lobby-error").textContent = err.message;
@@ -1178,9 +1311,35 @@ function parseUTC(s) {
 
 function renderStats(stats) {
   $("stat-online").textContent = stats.online;
-  $("stat-speakers").textContent = stats.waiting_speakers;
-  $("stat-listeners").textContent = stats.waiting_listeners;
   $("stat-users").textContent = stats.total_users;
+  if (siteConfig.role_matching) {
+    $("stat-box-listeners").classList.remove("hidden");
+    $("stat-speakers-label").textContent = "話し手 待機";
+    $("stat-speakers").textContent = stats.waiting_speakers;
+    $("stat-listeners").textContent = stats.waiting_listeners;
+  } else {
+    // 役割なしマッチングでは待機人数をまとめて表示
+    $("stat-box-listeners").classList.add("hidden");
+    $("stat-speakers-label").textContent = "待機中";
+    $("stat-speakers").textContent = stats.waiting;
+  }
+}
+
+/* 役割マッチングの有無に応じてマッチングUIを切り替える */
+function applyMatchingUI() {
+  const rm = siteConfig.role_matching;
+  document.querySelector(".role-select").classList.toggle("hidden", !rm);
+  const btn = $("btn-start-matching");
+  if (!rm) {
+    btn.disabled = false;
+    btn.textContent = "セッション相手を探す";
+  } else if (selectedRole) {
+    btn.disabled = false;
+    btn.textContent = `${roleLabel(selectedRole)}として相手を探す`;
+  } else {
+    btn.disabled = true;
+    btn.textContent = "役割を選んでください";
+  }
 }
 
 function renderAnnouncements(items) {
@@ -1419,15 +1578,35 @@ async function loadAdminSettings() {
   const s = await api("/api/admin/settings");
   $("set-minutes").value = s.session_minutes;
   $("set-registration").checked = s.allow_registration;
+  $("set-role-matching").checked = s.role_matching;
+  $("set-anonymous").checked = s.anonymous_mode;
+  $("set-survey").checked = s.survey_enabled;
+  $("set-survey-question").value = s.survey_question;
+  $("set-mode-toon").checked = s.mode_toon;
+  $("set-mode-real").checked = s.mode_real;
+  $("set-mode-still").checked = s.mode_still;
+  $("set-mode-camera").checked = s.mode_camera;
 }
 
 $("admin-settings-form").onsubmit = async (e) => {
   e.preventDefault();
   $("admin-settings-msg").textContent = "";
+  if (!["set-mode-toon", "set-mode-real", "set-mode-still", "set-mode-camera"].some((id) => $(id).checked)) {
+    $("admin-settings-msg").textContent = "表示モードは少なくとも1つ有効にしてください";
+    return;
+  }
   try {
     await api("/api/admin/settings", "PUT", {
       session_minutes: parseInt($("set-minutes").value, 10),
       allow_registration: $("set-registration").checked,
+      role_matching: $("set-role-matching").checked,
+      anonymous_mode: $("set-anonymous").checked,
+      survey_enabled: $("set-survey").checked,
+      survey_question: $("set-survey-question").value.trim(),
+      mode_toon: $("set-mode-toon").checked,
+      mode_real: $("set-mode-real").checked,
+      mode_still: $("set-mode-still").checked,
+      mode_camera: $("set-mode-camera").checked,
     });
     sessionMinutes = parseInt($("set-minutes").value, 10);
     $("admin-settings-msg").textContent = "保存しました";
@@ -1545,9 +1724,19 @@ async function loadSysSites() {
       try {
         const s = await api(`/api/sysadmin/sites/${btn.dataset.settings}/settings`);
         $("sys-settings-site").textContent = `: ${btn.dataset.slug}`;
+        const modes = [
+          s.mode_toon ? "デフォルメ" : null,
+          s.mode_real ? "リアル" : null,
+          s.mode_still ? "静止画" : null,
+          s.mode_camera ? "実映像" : null,
+        ].filter(Boolean).join("・") || "なし";
         $("sys-settings-view").innerHTML = `
           <li><div class="a-title">セッション時間</div><div class="a-body">${s.session_minutes}分</div></li>
-          <li><div class="a-title">新規登録</div><div class="a-body">${s.allow_registration ? "許可" : "停止中"}</div></li>`;
+          <li><div class="a-title">新規登録</div><div class="a-body">${s.allow_registration ? "許可" : "停止中"}</div></li>
+          <li><div class="a-title">マッチング</div><div class="a-body">${s.role_matching ? "話し手×聞き手" : "役割なし"}</div></li>
+          <li><div class="a-title">表示</div><div class="a-body">${s.anonymous_mode ? "匿名(ランダムな呼び名)" : "実名(ユーザー名)"}</div></li>
+          <li><div class="a-title">表示モード</div><div class="a-body">${modes}</div></li>
+          <li><div class="a-title">アンケート</div><div class="a-body">${s.survey_enabled ? escapeHtml(s.survey_question) : "なし"}</div></li>`;
       } catch (err) {
         $("sysadmin-error").textContent = err.message;
       }

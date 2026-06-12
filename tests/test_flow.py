@@ -387,18 +387,19 @@ def test_multitenant(users, admin_headers):
           f"{slug}_admin" in names and users[0]["username"] not in names, names)
 
     # サイト管理者がユーザーを作成 → サイトID付きでのみログイン可
+    member = f"member_{secrets.token_hex(3)}"
     r = requests.post(f"{BASE}/api/admin/users", headers=sub_headers,
-                      json={"username": "member1", "password": "member123"})
+                      json={"username": member, "password": "member123"})
     check("サイト管理者がユーザー作成", r.status_code == 201, r.text)
-    r = requests.post(f"{BASE}/api/login", json={"username": "member1", "password": "member123"})
+    r = requests.post(f"{BASE}/api/login", json={"username": member, "password": "member123"})
     check("作成ユーザーはメインサイトに入れない", r.status_code == 401, r.text)
     r = requests.post(f"{BASE}/api/login",
-                      json={"username": "member1", "password": "member123", "site": slug})
+                      json={"username": member, "password": "member123", "site": slug})
     check("作成ユーザーはサブサイトに入れる(要パスワード変更)",
           r.status_code == 200 and r.json()["must_change_password"], r.text)
 
     # 同名ユーザーがサイトごとに共存できる
-    r = requests.post(f"{BASE}/api/register", json={"username": "member1", "password": "other123"})
+    r = requests.post(f"{BASE}/api/register", json={"username": member, "password": "other123"})
     check("同名ユーザーを別サイト(メイン)に登録できる", r.status_code == 201, r.text)
 
     # 統計・設定の分離
@@ -429,6 +430,61 @@ def test_multitenant(users, admin_headers):
     check("削除後はログイン不可", r.status_code == 401, r.text)
 
 
+DEFAULT_PUT = {
+    "session_minutes": 10, "allow_registration": True,
+    "role_matching": True, "anonymous_mode": True,
+    "survey_enabled": True, "survey_question": "",
+    "mode_toon": True, "mode_real": True, "mode_still": True, "mode_camera": False,
+}
+
+
+async def test_phase2_settings(users, admin_headers):
+    print("[10] サイト設定(役割なし・実名・表示モード・アンケート)")
+    user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
+
+    # 役割なし+実名+アンケートなし+実映像許可 に変更
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "role_matching": False, "anonymous_mode": False,
+                           "survey_enabled": False, "mode_camera": True,
+                           "survey_question": "今日の対話はどうでしたか？"})
+    check("設定変更", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/config", headers=user_headers)
+    c = r.json()
+    check("configに反映",
+          c["role_matching"] is False and c["anonymous_mode"] is False
+          and c["survey_enabled"] is False and c["modes"]["camera"] is True
+          and c["survey_question"] == "今日の対話はどうでしたか？", c)
+
+    # 役割なしマッチング: roleを指定しなくてもマッチし、実名(ユーザー名)が表示される
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws1.send(json.dumps({"type": "join_queue"}))
+    q = await recv_type(ws1, "queued")
+    check("役割なしで待機できる", q["role"] == "any", q)
+    await ws2.send(json.dumps({"type": "join_queue"}))
+    m1 = await recv_type(ws1, "matched")
+    m2 = await recv_type(ws2, "matched")
+    check("役割なしでマッチング", m1["my_role"] == "any" and m2["my_role"] == "any", f"{m1} / {m2}")
+    check("実名モードではユーザー名が表示される",
+          m1["my_nickname"] == users[0]["username"] and m1["peer_nickname"] == users[1]["username"],
+          f"{m1}")
+    await ws1.close()
+    await ws2.close()
+
+    # 表示モードをすべてオフにはできない
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "mode_toon": False, "mode_real": False,
+                           "mode_still": False, "mode_camera": False})
+    check("表示モード全オフは422", r.status_code == 422, r.text)
+
+    # デフォルトに戻す
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers, json=DEFAULT_PUT)
+    check("設定をデフォルトに戻す", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/config", headers=user_headers)
+    check("デフォルト設問に戻る",
+          r.json()["role_matching"] is True and "聴けた" in r.json()["survey_question"], r.text)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -439,6 +495,7 @@ async def main():
     test_dashboard(users)
     admin_headers = test_admin(users)
     test_multitenant(users, admin_headers)
+    await test_phase2_settings(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

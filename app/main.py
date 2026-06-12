@@ -63,6 +63,15 @@ init_db()
 DEFAULT_SETTINGS = {
     "session_minutes": "10",       # 対話セッションの長さ(分)
     "allow_registration": "true",  # 新規ユーザー登録を受け付けるか(メインサイトのみ有効)
+    "role_matching": "true",       # true=「話し手」「聞き手」に分かれてマッチング / false=役割なし
+    "anonymous_mode": "true",      # true=匿名(ランダムな呼び名) / false=実名(ユーザー名表示)
+    "survey_enabled": "true",      # セッション後のアンケートを行うか
+    "survey_question": "相手の話を「聴けた」と感じましたか？",  # アンケートの設問
+    # 通話画面で利用できる表示モード
+    "mode_toon": "true",     # デフォルメモードアバター
+    "mode_real": "true",     # リアルモードアバター(3D VRM)
+    "mode_still": "true",    # 静止画
+    "mode_camera": "false",  # 実映像(カメラそのまま)
 }
 
 
@@ -213,6 +222,14 @@ class AnnouncementIn(BaseModel):
 class SettingsIn(BaseModel):
     session_minutes: int = Field(ge=1, le=60)
     allow_registration: bool
+    role_matching: bool = True
+    anonymous_mode: bool = True
+    survey_enabled: bool = True
+    survey_question: str = Field(default="", max_length=300)
+    mode_toon: bool = True
+    mode_real: bool = True
+    mode_still: bool = True
+    mode_camera: bool = False
 
 
 class SiteIn(BaseModel):
@@ -338,8 +355,21 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @app.get("/api/config")
 def app_config(user: User = Depends(active_user), db: Session = Depends(get_db)):
-    """ログインユーザー向けのサイト設定(セッション時間など)"""
-    return {"session_minutes": int(get_setting(db, user.site_id, "session_minutes"))}
+    """ログインユーザー向けのサイト設定"""
+    sid = user.site_id
+    return {
+        "session_minutes": int(get_setting(db, sid, "session_minutes")),
+        "role_matching": get_setting(db, sid, "role_matching") == "true",
+        "anonymous_mode": get_setting(db, sid, "anonymous_mode") == "true",
+        "survey_enabled": get_setting(db, sid, "survey_enabled") == "true",
+        "survey_question": get_setting(db, sid, "survey_question") or DEFAULT_SETTINGS["survey_question"],
+        "modes": {
+            "toon": get_setting(db, sid, "mode_toon") == "true",
+            "real": get_setting(db, sid, "mode_real") == "true",
+            "still": get_setting(db, sid, "mode_still") == "true",
+            "camera": get_setting(db, sid, "mode_camera") == "true",
+        },
+    }
 
 
 # --- アンケート ----------------------------------------------------------------
@@ -595,9 +625,20 @@ def admin_delete_user(
 
 
 def _settings_payload(db: Session, site_id: int) -> dict:
+    def flag(key):
+        return get_setting(db, site_id, key) == "true"
+
     return {
         "session_minutes": int(get_setting(db, site_id, "session_minutes")),
-        "allow_registration": get_setting(db, site_id, "allow_registration") == "true",
+        "allow_registration": flag("allow_registration"),
+        "role_matching": flag("role_matching"),
+        "anonymous_mode": flag("anonymous_mode"),
+        "survey_enabled": flag("survey_enabled"),
+        "survey_question": get_setting(db, site_id, "survey_question") or DEFAULT_SETTINGS["survey_question"],
+        "mode_toon": flag("mode_toon"),
+        "mode_real": flag("mode_real"),
+        "mode_still": flag("mode_still"),
+        "mode_camera": flag("mode_camera"),
     }
 
 
@@ -612,8 +653,17 @@ def admin_put_settings(
     admin: User = Depends(site_admin_user),
     db: Session = Depends(get_db),
 ):
-    set_setting(db, admin.site_id, "session_minutes", str(body.session_minutes))
-    set_setting(db, admin.site_id, "allow_registration", "true" if body.allow_registration else "false")
+    if not (body.mode_toon or body.mode_real or body.mode_still or body.mode_camera):
+        raise HTTPException(status_code=422, detail="表示モードは少なくとも1つ有効にしてください")
+    sid = admin.site_id
+    set_setting(db, sid, "session_minutes", str(body.session_minutes))
+    for key in (
+        "allow_registration", "role_matching", "anonymous_mode", "survey_enabled",
+        "mode_toon", "mode_real", "mode_still", "mode_camera",
+    ):
+        set_setting(db, sid, key, "true" if getattr(body, key) else "false")
+    set_setting(db, sid, "survey_question",
+                body.survey_question.strip() or DEFAULT_SETTINGS["survey_question"])
     db.commit()
     return {"ok": True}
 
@@ -777,7 +827,19 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
             msg = await ws.receive_json()
             msg_type = msg.get("type")
             if msg_type == "join_queue":
-                await manager.join_queue(client, msg.get("role") or "")
+                # サイト設定(役割マッチング・匿名)を待機開始の度に反映する
+                sdb = SessionLocal()
+                try:
+                    role_matching = get_setting(sdb, user.site_id, "role_matching") == "true"
+                    client.anonymous = get_setting(sdb, user.site_id, "anonymous_mode") == "true"
+                finally:
+                    sdb.close()
+                role = msg.get("role") or ""
+                if not role_matching:
+                    role = "any"
+                elif role == "any":
+                    role = ""  # 役割マッチング有効時にanyは指定できない
+                await manager.join_queue(client, role)
             elif msg_type == "cancel_queue":
                 await manager.cancel_queue(client)
             elif msg_type == "consent":

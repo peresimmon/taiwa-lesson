@@ -27,7 +27,8 @@ from fastapi import WebSocket
 
 ROLE_SPEAKER = "speaker"
 ROLE_LISTENER = "listener"
-ROLES = (ROLE_SPEAKER, ROLE_LISTENER)
+ROLE_ANY = "any"  # 役割なしマッチング(サイト設定で役割マッチングを無効にした場合)
+ROLES = (ROLE_SPEAKER, ROLE_LISTENER, ROLE_ANY)
 
 # セッション内だけで使う呼び名の候補。本名・ユーザー名は相手に伝えない
 NICKNAMES = [
@@ -47,6 +48,7 @@ class Client:
         self.room: "Room | None" = None
         self.role: str | None = None      # 待機〜セッション中の役割
         self.nickname: str | None = None  # セッション限定のランダムな呼び名
+        self.anonymous = True             # False=実名(ユーザー名)で表示するサイト
 
     async def send(self, payload: dict) -> None:
         try:
@@ -83,6 +85,7 @@ class MatchingManager:
         return {
             "speakers": len(self._queue(site_id, ROLE_SPEAKER)),
             "listeners": len(self._queue(site_id, ROLE_LISTENER)),
+            "any": len(self._queue(site_id, ROLE_ANY)),
         }
 
     def online_count(self, site_id: int) -> int:
@@ -122,12 +125,15 @@ class MatchingManager:
             if client.room is not None or self._in_queue(client):
                 return
             client.role = role
-            # 同一サイト内で反対の役割で待っている人がいれば即マッチ。いなければ待機列へ
-            opposite = ROLE_LISTENER if role == ROLE_SPEAKER else ROLE_SPEAKER
-            opposite_queue = self._queue(client.site_id, opposite)
-            if opposite_queue:
-                partner = random.choice(opposite_queue)
-                opposite_queue.remove(partner)
+            # 相手となる待機列: 役割ありなら反対の役割、役割なしなら同じ"any"の列
+            if role == ROLE_ANY:
+                partner_queue = self._queue(client.site_id, ROLE_ANY)
+            else:
+                opposite = ROLE_LISTENER if role == ROLE_SPEAKER else ROLE_SPEAKER
+                partner_queue = self._queue(client.site_id, opposite)
+            if partner_queue:
+                partner = random.choice(partner_queue)
+                partner_queue.remove(partner)
                 await self._create_room(client, partner)
             else:
                 self._queue(client.site_id, role).append(client)
@@ -138,7 +144,12 @@ class MatchingManager:
         room = Room(secrets.token_hex(16), a, b)
         a.room = room
         b.room = room
-        a.nickname, b.nickname = random.sample(NICKNAMES, 2)
+        if a.anonymous:
+            # 匿名サイト: セッション限定のランダムな呼び名
+            a.nickname, b.nickname = random.sample(NICKNAMES, 2)
+        else:
+            # 実名サイト(社内利用など): ユーザー名をそのまま表示
+            a.nickname, b.nickname = a.username, b.username
         for member in (a, b):
             peer = room.peer_of(member)
             await member.send(
