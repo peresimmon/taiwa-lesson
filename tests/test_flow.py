@@ -692,6 +692,74 @@ async def test_rooms(users, admin_headers):
     check("ロールを戻す", r.status_code == 200, r.text)
 
 
+def test_extras(users, admin_headers):
+    print("[13] 検討枠(ブランディング・CSV・レポート・監査・カレンダー連携)")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    suffix = secrets.token_hex(3)
+
+    # サイト別ブランディング
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "site_name": "テスト相談室", "tagline": "きいて、はなして。"})
+    check("ブランディング変更", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/config", headers=h0)
+    c = r.json()
+    check("configにサイト名・キャッチコピー反映",
+          c["site_name"] == "テスト相談室" and c["tagline"] == "きいて、はなして。", c)
+    r = requests.put(f"{BASE}/api/admin/settings", headers=admin_headers,
+                     json={**DEFAULT_PUT, "site_name": "対話のおけいこ", "tagline": ""})
+    check("ブランディングを戻す", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/config", headers=h0)
+    check("空欄のキャッチコピーはデフォルトに戻る", "聴く力" in r.json()["tagline"], r.text)
+
+    # CSV一括登録
+    csv = f"bulk1_{suffix},bulkpass1\nbulk2_{suffix}\nbulk1_{suffix},dup"
+    r = requests.post(f"{BASE}/api/admin/users/bulk", headers=admin_headers, json={"csv": csv})
+    data = r.json()
+    check("CSV一括登録", r.status_code == 200 and data["created"] == 2, data)
+    gen = next(x for x in data["results"] if x["username"] == f"bulk2_{suffix}")
+    check("パスワード省略時は自動生成して返す", gen["password"] is not None, data)
+    dup = data["results"][2]
+    check("重複行はエラーとして報告", dup["status"] != "ok", data)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"bulk1_{suffix}", "password": "bulkpass1"})
+    check("一括登録ユーザーはログイン可(要パスワード変更)",
+          r.status_code == 200 and r.json()["must_change_password"], r.text)
+
+    # 利用レポート
+    r = requests.get(f"{BASE}/api/admin/report", headers=admin_headers)
+    rep = r.json()
+    check("利用レポート取得", r.status_code == 200 and rep["total_sessions"] >= 1
+          and len(rep["daily"]) == 14 and rep["avg_rating"] is not None, rep)
+    r = requests.get(f"{BASE}/api/admin/report", headers=h0)
+    check("一般ユーザーはレポート不可", r.status_code == 403, r.text)
+
+    # 監査ログ
+    r = requests.get(f"{BASE}/api/admin/audit", headers=admin_headers)
+    logs = r.json()
+    actions = {a["action"] for a in logs}
+    check("監査ログに操作が記録される",
+          "users_bulk" in actions and "settings_update" in actions, actions)
+
+    # カレンダー→ルーム連携
+    r = requests.get(f"{BASE}/api/me", headers=h0)
+    uid0 = r.json()["id"]
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "moderator"})
+    r = requests.post(f"{BASE}/api/rooms", headers=h0, json={"name": f"連携部屋_{suffix}"})
+    rid = r.json()["id"]
+    r = requests.post(f"{BASE}/api/events", headers=h0,
+                      json={"title": f"連携イベント_{suffix}", "date": "2026-08-01", "room_id": rid})
+    check("ルーム連携イベント作成", r.status_code == 201, r.text)
+    r = requests.get(f"{BASE}/api/events?month=2026-08", headers=h0)
+    ev = next(e for e in r.json() if e["title"] == f"連携イベント_{suffix}")
+    check("イベントにルーム名が付く", ev["room_id"] == rid and ev["room_name"] == f"連携部屋_{suffix}", ev)
+    r = requests.delete(f"{BASE}/api/rooms/{rid}", headers=h0)
+    check("ルーム削除", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/events?month=2026-08", headers=h0)
+    ev = next(e for e in r.json() if e["title"] == f"連携イベント_{suffix}")
+    check("ルーム削除でイベントの連携が外れる", ev["room_id"] is None, ev)
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -705,6 +773,7 @@ async def main():
     await test_phase2_settings(users, admin_headers)
     test_teams(users, admin_headers)
     await test_rooms(users, admin_headers)
+    test_extras(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

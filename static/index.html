@@ -18,7 +18,7 @@
 </head>
 <body>
   <header>
-    <h1>対話のおけいこ<small>TAIWA NO OKEIKO</small></h1>
+    <h1><span id="site-title">対話のおけいこ</span><small id="site-subtitle">TAIWA NO OKEIKO</small></h1>
     <div id="user-info" class="hidden">
       <span id="user-name"></span>
       <button id="btn-admin" class="btn-text hidden">管理画面</button>
@@ -70,7 +70,7 @@
       <div class="panel hero">
         <div class="hero-left">
           <h2>おかえりなさい、<span id="dash-username"></span> さん</h2>
-          <p class="tagline">「話す力」じゃなく、「聴く力」を鍛える。</p>
+          <p class="tagline" id="dash-tagline">「話す力」じゃなく、「聴く力」を鍛える。</p>
           <p class="note">完全匿名の相手と10分間の対話セッション。<br>安全な環境で、本音の対話を練習できます。</p>
           <p id="lobby-error" class="error"></p>
         </div>
@@ -115,6 +115,7 @@
           <form id="event-form" class="inline-form">
             <input type="date" id="event-date" required>
             <input type="text" id="event-title" placeholder="イベント名" required maxlength="200">
+            <select id="event-room" class="scope-select event-room-select"><option value="">ルーム連携なし</option></select>
             <button type="submit" class="btn-small">追加</button>
           </form>
         </div>
@@ -325,6 +326,13 @@
             <input type="text" id="new-user-pass" placeholder="初期パスワード" required minlength="6" maxlength="128">
             <button type="submit" class="btn-small">ユーザー作成</button>
           </form>
+          <details class="csv-box">
+            <summary>CSV一括登録</summary>
+            <p class="note">1行に「ユーザー名,初期パスワード」。パスワード省略時は自動生成され、結果に一度だけ表示されます。</p>
+            <textarea id="bulk-csv" rows="4" placeholder="taro,pass123&#10;hanako"></textarea>
+            <button type="button" id="btn-bulk-users" class="btn-small">一括登録</button>
+            <div id="bulk-result" class="bulk-result"></div>
+          </details>
           <div class="admin-table-wrap">
             <table class="admin-table">
               <thead>
@@ -345,6 +353,12 @@
         <div class="panel">
           <h3>サイト設定</h3>
           <form id="admin-settings-form">
+            <label>サイト名（ヘッダーに表示されます）
+              <input type="text" id="set-site-name" maxlength="100">
+            </label>
+            <label>キャッチコピー（ダッシュボードに表示。空欄でデフォルト）
+              <input type="text" id="set-tagline" maxlength="200">
+            </label>
             <label>セッション時間（分）
               <input type="number" id="set-minutes" min="1" max="60" required>
             </label>
@@ -376,6 +390,25 @@
             <button type="submit" class="btn-small">設定を保存</button>
             <p id="admin-settings-msg" class="note"></p>
           </form>
+        </div>
+
+        <div class="panel">
+          <h3>利用レポート</h3>
+          <div id="report-numbers" class="stats report-stats"></div>
+          <div class="setting-group-title" style="margin-top:14px">直近14日のセッション数</div>
+          <div id="report-chart" class="report-chart"></div>
+          <div class="setting-group-title">チーム別</div>
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead><tr><th>チーム</th><th>人数</th><th>セッション</th></tr></thead>
+              <tbody id="report-teams"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>監査ログ</h3>
+          <ul id="audit-list" class="announcement-list audit-list"></ul>
         </div>
 
         <div class="panel">

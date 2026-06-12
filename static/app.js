@@ -1298,6 +1298,7 @@ async function loadDashboard() {
     renderHistory(history);
     sessionMinutes = config.session_minutes || 10;
     siteConfig = config;
+    applyBranding();
     applyMatchingUI();
     renderStats(stats);
     await loadTeams();
@@ -1328,6 +1329,16 @@ function renderStats(stats) {
     $("stat-speakers-label").textContent = "待機中";
     $("stat-speakers").textContent = stats.waiting;
   }
+}
+
+/* サイト名・キャッチコピーをサイト設定に合わせて表示する */
+function applyBranding() {
+  const name = siteConfig.site_name || "対話のおけいこ";
+  $("site-title").textContent = name;
+  // メインブランド以外ではローマ字サブタイトルを出さない
+  $("site-subtitle").classList.toggle("hidden", name !== "対話のおけいこ");
+  $("dash-tagline").textContent = siteConfig.tagline || "";
+  document.title = `${name} - 匿名対話トレーニング`;
 }
 
 /* 役割マッチングの有無に応じてマッチングUIを切り替える */
@@ -1513,6 +1524,13 @@ async function loadRooms() {
   if (!enabled) return;
   myRooms = await api("/api/rooms");
   $("btn-room-new").classList.toggle("hidden", !siteConfig.can_create_rooms);
+  // イベントフォームのルーム連携の選択肢を更新
+  const evSel = $("event-room");
+  const cur = evSel.value;
+  evSel.innerHTML =
+    '<option value="">ルーム連携なし</option>' +
+    myRooms.map((r) => `<option value="${r.id}">🎥${escapeHtml(r.name)}</option>`).join("");
+  evSel.value = myRooms.some((r) => String(r.id) === cur) ? cur : "";
   $("room-list").innerHTML = myRooms.length
     ? myRooms
         .map(
@@ -1716,12 +1734,23 @@ function renderEventList() {
         .map(
           (e) => `<li>
             <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}</span>
-            <span>${escapeHtml(e.title)}</span>
+            <span>${escapeHtml(e.title)}${e.room_id && e.room_name ? ` <button class="btn-text" data-evroom="${e.room_id}">🎥${escapeHtml(e.room_name)}</button>` : ""}</span>
             <span class="e-user">by ${escapeHtml(e.username)}</span>
           </li>`
         )
         .join("")
     : '<li class="empty-note">今月のイベントはありません</li>';
+  // 予定からワンタップでルームに参加できる
+  $("event-list").querySelectorAll("[data-evroom]").forEach((btn) => {
+    btn.onclick = () => {
+      const rid = parseInt(btn.dataset.evroom, 10);
+      if (myRooms.some((r) => r.id === rid)) {
+        joinRoom(rid);
+      } else {
+        $("lobby-error").textContent = "ルームが見つかりません(削除されたか、参加権限がありません)";
+      }
+    };
+  });
 }
 
 $("cal-prev").onclick = () => {
@@ -1742,6 +1771,7 @@ $("event-form").onsubmit = async (e) => {
       title: $("event-title").value.trim(),
       date: $("event-date").value,
       team_id: eventScope ? parseInt(eventScope, 10) : null,
+      room_id: $("event-room").value ? parseInt($("event-room").value, 10) : null,
     });
     $("event-title").value = "";
     // 追加したイベントの月を表示
@@ -1790,6 +1820,8 @@ async function showAdmin() {
       loadAdminSettings(),
       loadAdminAnnouncements(),
       loadAdminTeams(),
+      loadAdminReport(),
+      loadAdminAudit(),
     ]);
   } catch (err) {
     $("admin-error").textContent = err.message;
@@ -1883,6 +1915,8 @@ $("admin-user-form").onsubmit = async (e) => {
 
 async function loadAdminSettings() {
   const s = await api("/api/admin/settings");
+  $("set-site-name").value = s.site_name;
+  $("set-tagline").value = s.tagline;
   $("set-minutes").value = s.session_minutes;
   $("set-registration").checked = s.allow_registration;
   $("set-role-matching").checked = s.role_matching;
@@ -1905,6 +1939,8 @@ $("admin-settings-form").onsubmit = async (e) => {
   }
   try {
     await api("/api/admin/settings", "PUT", {
+      site_name: $("set-site-name").value.trim(),
+      tagline: $("set-tagline").value.trim(),
       session_minutes: parseInt($("set-minutes").value, 10),
       allow_registration: $("set-registration").checked,
       role_matching: $("set-role-matching").checked,
@@ -1923,6 +1959,93 @@ $("admin-settings-form").onsubmit = async (e) => {
     $("admin-settings-msg").textContent = err.message;
   }
 };
+
+// --- CSV一括登録 ---
+$("btn-bulk-users").onclick = async () => {
+  const csv = $("bulk-csv").value.trim();
+  if (!csv) return;
+  $("admin-error").textContent = "";
+  try {
+    const data = await api("/api/admin/users/bulk", "POST", { csv });
+    $("bulk-csv").value = "";
+    $("bulk-result").innerHTML =
+      `<strong>${data.created}件を登録しました。</strong><br>` +
+      data.results
+        .map(
+          (r) =>
+            `${escapeHtml(r.username)}: ${r.status === "ok"
+              ? "登録" + (r.password ? `（自動生成パスワード: <strong>${escapeHtml(r.password)}</strong>）` : "")
+              : escapeHtml(r.status)}`
+        )
+        .join("<br>") +
+      '<br><small>自動生成パスワードは今だけ表示されます。各ユーザーは初回ログイン時に変更が必要です。</small>';
+    await loadAdminUsers();
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+};
+
+// --- 利用レポート ---
+async function loadAdminReport() {
+  const r = await api("/api/admin/report");
+  $("report-numbers").innerHTML = `
+    <div class="stat"><span>${r.total_users}</span><small>登録者</small></div>
+    <div class="stat"><span>${r.total_sessions}</span><small>総セッション</small></div>
+    <div class="stat"><span>${r.sessions_7d}</span><small>直近7日</small></div>
+    <div class="stat"><span>${r.avg_rating ?? "-"}</span><small>平均評価</small></div>`;
+  const max = Math.max(...r.daily.map((d) => d.count), 1);
+  $("report-chart").innerHTML = r.daily
+    .map(
+      (d) => `<div class="bar-wrap" title="${d.date}: ${d.count}件">
+        <div class="bar" style="height:${Math.max((d.count / max) * 100, d.count ? 6 : 0)}%"></div>
+        <small>${parseInt(d.date.slice(8), 10)}</small>
+      </div>`
+    )
+    .join("");
+  $("report-teams").innerHTML = r.teams.length
+    ? r.teams
+        .map(
+          (t) => `<tr><td>${escapeHtml(t.name)}</td><td>${t.members}</td><td>${t.sessions}</td></tr>`
+        )
+        .join("")
+    : '<tr><td colspan="3" class="empty-note">チームはまだありません</td></tr>';
+}
+
+// --- 監査ログ ---
+const auditLabels = {
+  settings_update: "サイト設定変更",
+  user_create: "ユーザー作成",
+  user_delete: "ユーザー削除",
+  users_bulk: "CSV一括登録",
+  role_change: "ロール変更",
+  announcement_create: "お知らせ投稿",
+  announcement_delete: "お知らせ削除",
+  team_create: "チーム作成",
+  team_delete: "チーム削除",
+  team_member_add: "チームメンバー追加",
+  team_leader_set: "リーダー設定",
+  room_create: "ルーム作成",
+  room_update: "ルーム更新",
+  room_delete: "ルーム削除",
+  site_create: "サイト作成",
+  site_delete: "サイト削除",
+};
+
+async function loadAdminAudit() {
+  const rows = await api("/api/admin/audit");
+  $("audit-list").innerHTML = rows.length
+    ? rows
+        .map(
+          (a) => `<li>
+            <div class="a-title">${auditLabels[a.action] || escapeHtml(a.action)}
+              <span class="audit-user">by ${escapeHtml(a.username)}</span></div>
+            ${a.detail ? `<div class="a-body">${escapeHtml(a.detail)}</div>` : ""}
+            <div class="a-date">${parseUTC(a.created_at).toLocaleString("ja-JP")}</div>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">まだ操作の記録はありません</li>';
+}
 
 // --- チーム管理(サイト管理者) ---
 let adminTeamId = null;

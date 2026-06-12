@@ -424,6 +424,35 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #admin-team-list .role-tag, #admin-team-members .role-tag {
   font-size: 0.65rem; padding: 1px 8px; margin-left: 6px;
 }
+.event-room-select { float: none; max-width: 140px; flex: 0 0 auto; }
+
+/* CSV一括登録 */
+.csv-box { margin-bottom: 12px; font-size: 0.85rem; }
+.csv-box summary { cursor: pointer; color: var(--primary); font-weight: 600; }
+.csv-box textarea {
+  display: block; width: 100%; margin: 8px 0; padding: 8px 10px;
+  border: 1.5px solid var(--border); border-radius: 8px;
+  font-family: inherit; font-size: 0.85rem; background: var(--bg);
+}
+.bulk-result {
+  margin-top: 10px; font-size: 0.82rem; line-height: 1.8;
+  background: var(--warm); border-radius: 10px; padding: 0;
+}
+.bulk-result:not(:empty) { padding: 10px 14px; border: 1.5px solid var(--warm-dark); }
+
+/* 利用レポート */
+.report-stats .stat span { font-size: 1.25rem; }
+.report-chart {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 90px; margin: 6px 0 14px;
+}
+.bar-wrap { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; }
+.bar-wrap .bar { width: 100%; background: var(--primary); border-radius: 3px 3px 0 0; min-height: 0; }
+.bar-wrap small { font-size: 0.6rem; color: var(--muted); margin-top: 2px; }
+
+/* 監査ログ */
+.audit-list { max-height: 320px; overflow-y: auto; }
+.audit-user { font-weight: 400; color: var(--muted); font-size: 0.78rem; margin-left: 6px; }
 
 @media (max-width: 560px) {
   .card { padding: 22px 18px; }

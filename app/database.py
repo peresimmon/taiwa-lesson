@@ -90,6 +90,7 @@ class Event(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True, index=True)
+    room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id"), nullable=True)  # ルーム連携
     title: Mapped[str] = mapped_column(String(200))
     date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -166,6 +167,20 @@ class RoomManager(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AuditLog(Base):
+    """管理操作の監査ログ(サイトごと)"""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    user_id: Mapped[int] = mapped_column(Integer)
+    username: Mapped[str] = mapped_column(String(50))
+    action: Mapped[str] = mapped_column(String(50))
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Setting(Base):
     """サイトごとの設定(キー・バリュー)"""
 
@@ -215,6 +230,9 @@ def _migrate() -> None:
             tcols = cols(conn, table)
             if tcols and "team_id" not in tcols:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN team_id INTEGER"))
+        ev_cols = cols(conn, "events")
+        if ev_cols and "room_id" not in ev_cols:
+            conn.execute(text("ALTER TABLE events ADD COLUMN room_id INTEGER"))
         set_cols = cols(conn, "settings")
         if set_cols and "site_id" not in set_cols:
             # 旧スキーマ(キーのみ)は作り直す。設定はデフォルト値に戻る
