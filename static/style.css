@@ -398,6 +398,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 6px 8px; border-bottom: 1.5px solid var(--border);
 }
 .admin-table td { padding: 7px 8px; border-bottom: 1px dashed var(--border); }
+.admin-table .nowrap { white-space: nowrap; }
 .admin-table tr:last-child td { border-bottom: none; }
 .admin-table .role-tag { font-size: 0.68rem; padding: 2px 8px; white-space: nowrap; display: inline-block; }
 .admin-actions { white-space: nowrap; }

@@ -583,10 +583,17 @@
     <section id="screen-sysadmin" class="screen hidden">
       <div class="panel admin-bar">
         <h2>システム管理画面</h2>
+        <nav class="admin-nav">
+          <button type="button" class="admin-tab sys-tab active" data-page="sites">サイト一覧</button>
+          <button type="button" class="admin-tab sys-tab" data-page="create">サイト作成</button>
+          <button type="button" class="admin-tab sys-tab" data-page="detail">サイトの詳細</button>
+        </nav>
         <button id="btn-sysadmin-back" class="btn-secondary">ホームへ戻る</button>
       </div>
-      <div class="dash-grid">
-        <div class="panel">
+
+      <!-- ページ1: サイト一覧(横幅いっぱい) -->
+      <div class="admin-page" id="sys-page-sites">
+        <div class="panel panel-wide">
           <h3>サイト一覧</h3>
           <div class="admin-table-wrap">
             <table class="admin-table">
@@ -597,22 +604,30 @@
             </table>
           </div>
         </div>
+      </div>
 
-        <div class="panel">
-          <h3>サイト作成</h3>
-          <form id="sys-site-form">
-            <label>サイトID（半角小文字英数とハイフン）
-              <input type="text" id="site-slug" required minlength="2" maxlength="30" pattern="[a-z0-9][a-z0-9\-]{1,29}">
-            </label>
-            <label>サイト名
-              <input type="text" id="site-name" required maxlength="100">
-            </label>
-            <button type="submit" class="btn-small">サイトを作成</button>
-          </form>
-          <div id="sys-site-created" class="sys-created hidden"></div>
+      <!-- ページ2: サイト作成 -->
+      <div class="admin-page hidden" id="sys-page-create">
+        <div class="dash-grid">
+          <div class="panel">
+            <h3>サイト作成</h3>
+            <form id="sys-site-form">
+              <label>サイトID（半角小文字英数とハイフン）
+                <input type="text" id="site-slug" required minlength="2" maxlength="30" pattern="[a-z0-9][a-z0-9\-]{1,29}">
+              </label>
+              <label>サイト名
+                <input type="text" id="site-name" required maxlength="100">
+              </label>
+              <button type="submit" class="btn-small">サイトを作成</button>
+            </form>
+            <div id="sys-site-created" class="sys-created hidden"></div>
+          </div>
         </div>
+      </div>
 
-        <div class="panel">
+      <!-- ページ3: サイトの詳細(ユーザー・設定) -->
+      <div class="admin-page hidden" id="sys-page-detail">
+        <div class="panel panel-wide">
           <h3>サイトのユーザー<span id="sys-users-site" class="admin-history-user"></span></h3>
           <div class="admin-table-wrap">
             <table class="admin-table">
@@ -626,7 +641,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel panel-wide">
           <h3>サイトの設定<span id="sys-settings-site" class="admin-history-user"></span></h3>
           <ul id="sys-settings-view" class="announcement-list">
             <li class="empty-note">サイト一覧の「設定」を押すと表示されます</li>

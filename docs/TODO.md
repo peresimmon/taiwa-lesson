@@ -15,6 +15,9 @@
 
 ## セキュリティ
 
+- [ ] **administratorの初回パスワード変更強制を復活させる** — デモ版では利便性のため
+      無効化している(`app/main.py` の `seed_initial_data` 内、コメント箇所)。
+      本番では `must_change_password=True` に戻し、既定パスワード`password`も廃止する
 - [ ] **ログイン試行回数制限(ブルートフォース対策)** — slowapi等でIP/ユーザー単位のレート制限を導入
 - [ ] CORSの `allow_origins` を本番ドメインに絞る
 - [ ] administrator・サイト管理者の初期パスワード運用ルールの整備(現状は初回ログイン時の変更強制のみ)

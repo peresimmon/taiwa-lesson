@@ -2092,13 +2092,13 @@ $("btn-admin-back").onclick = () => showLobby();
 
 /* 管理画面のページ切替(ユーザー / サイト設定 / レポート・ログ / チーム・お知らせ) */
 function showAdminPage(name) {
-  document.querySelectorAll(".admin-page").forEach((el) => el.classList.add("hidden"));
+  document.querySelectorAll("#screen-admin .admin-page").forEach((el) => el.classList.add("hidden"));
   $(`admin-page-${name}`).classList.remove("hidden");
-  document.querySelectorAll(".admin-tab").forEach((tab) => {
+  document.querySelectorAll("#screen-admin .admin-tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.page === name);
   });
 }
-document.querySelectorAll(".admin-tab").forEach((tab) => {
+document.querySelectorAll("#screen-admin .admin-tab").forEach((tab) => {
   tab.onclick = () => showAdminPage(tab.dataset.page);
 });
 
@@ -2824,9 +2824,22 @@ const roleLabels = {
   user: "一般",
 };
 
+/* システム管理画面のページ切替(サイト一覧 / サイト作成 / サイトの詳細) */
+function showSysPage(name) {
+  document.querySelectorAll("#screen-sysadmin .admin-page").forEach((el) => el.classList.add("hidden"));
+  $(`sys-page-${name}`).classList.remove("hidden");
+  document.querySelectorAll("#screen-sysadmin .sys-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.page === name);
+  });
+}
+document.querySelectorAll("#screen-sysadmin .sys-tab").forEach((tab) => {
+  tab.onclick = () => showSysPage(tab.dataset.page);
+});
+
 async function showSysadmin() {
   $("sysadmin-error").textContent = "";
   showScreen("sysadmin");
+  showSysPage("sites");
   try {
     await loadSysSites();
   } catch (err) {
@@ -2840,9 +2853,9 @@ async function loadSysSites() {
     .map(
       (s) => `<tr>
         <td>${s.id}</td>
-        <td>${escapeHtml(s.slug)}</td>
-        <td>${escapeHtml(s.name)}</td>
-        <td>${s.is_main ? '<span class="role-tag speaker">メイン</span>' : "サブ"}</td>
+        <td class="nowrap">${escapeHtml(s.slug)}</td>
+        <td class="nowrap"><strong>${escapeHtml(s.name)}</strong></td>
+        <td class="nowrap">${s.is_main ? '<span class="role-tag speaker">メイン</span>' : "サブ"}</td>
         <td>${s.users}</td>
         <td class="admin-actions">
           <button class="btn-text" data-users="${s.id}" data-slug="${escapeHtml(s.slug)}">ユーザー</button>
@@ -2858,6 +2871,7 @@ async function loadSysSites() {
     btn.onclick = async () => {
       try {
         const users = await api(`/api/sysadmin/sites/${btn.dataset.users}/users`);
+        showSysPage("detail");
         $("sys-users-site").textContent = `: ${btn.dataset.slug}`;
         $("sys-user-rows").innerHTML = users.length
           ? users
@@ -2880,6 +2894,7 @@ async function loadSysSites() {
     btn.onclick = async () => {
       try {
         const s = await api(`/api/sysadmin/sites/${btn.dataset.settings}/settings`);
+        showSysPage("detail");
         $("sys-settings-site").textContent = `: ${btn.dataset.slug}`;
         const modes = [
           s.mode_toon ? "デフォルメ" : null,

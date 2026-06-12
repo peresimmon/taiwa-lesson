@@ -213,7 +213,9 @@ def seed_initial_data() -> None:
         db.query(Announcement).filter(Announcement.site_id == 0).update({"site_id": main.id})
         db.commit()
 
-        # システム管理者。初期パスワードのままなら初回ログイン時に変更を強制する
+        # システム管理者。
+        # デモ版に限り初回ログイン時のパスワード変更強制を行わない
+        # (本番では必ず復活させること → docs/TODO.md)
         admin = (
             db.query(User)
             .filter(User.site_id == main.id, User.username == "administrator")
@@ -226,14 +228,14 @@ def seed_initial_data() -> None:
                     username="administrator",
                     password_hash=hash_password("password"),
                     role="system_admin",
-                    must_change_password=True,
+                    must_change_password=False,
                 )
             )
         else:
             if admin.role != "system_admin":
                 admin.role = "system_admin"
-            if verify_password("password", admin.password_hash) and not admin.must_change_password:
-                admin.must_change_password = True
+            if admin.must_change_password:
+                admin.must_change_password = False
 
         # メインサイトのサイト管理者
         if not db.query(User).filter(
