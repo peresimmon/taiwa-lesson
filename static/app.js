@@ -1692,11 +1692,9 @@ function renderTeamPanel() {
     ? myTeams
         .map(
           (t) => `<li>
-            <span>${escapeHtml(t.name)}</span>
+            <button class="team-link" data-team="${t.id}">${escapeHtml(t.name)}</button>
             ${t.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
-            <span class="e-user">${t.members}人
-              <button class="btn-text" data-team="${t.id}">開く</button>
-            </span>
+            <span class="e-user">${t.members}人</span>
           </li>`
         )
         .join("")
@@ -2025,7 +2023,7 @@ async function startRoomMatching(room, role) {
 
 function openRoomForm(room) {
   editingRoomId = room ? room.id : null;
-  $("room-form-wrap").classList.remove("hidden");
+  $("room-form-overlay").classList.remove("hidden");
   $("room-form-error").textContent = "";
   $("room-form-title").textContent = room ? `ルームを編集: ${room.name}` : "ルームを作成";
   $("room-form-submit").textContent = room ? "更新" : "作成";
@@ -2074,7 +2072,7 @@ function openRoomForm(room) {
 }
 
 $("btn-room-new").onclick = () => openRoomForm(null);
-$("room-form-cancel").onclick = () => $("room-form-wrap").classList.add("hidden");
+$("room-form-cancel").onclick = () => $("room-form-overlay").classList.add("hidden");
 $("room-modes-override").onchange = () =>
   $("room-modes-list").classList.toggle("hidden", !$("room-modes-override").checked);
 
@@ -2113,7 +2111,7 @@ $("room-form").onsubmit = async (e) => {
     } else {
       await api("/api/rooms", "POST", body);
     }
-    $("room-form-wrap").classList.add("hidden");
+    $("room-form-overlay").classList.add("hidden");
     await loadRooms();
   } catch (err) {
     $("room-form-error").textContent = err.message;
@@ -3278,9 +3276,9 @@ async function showProfile() {
       ? teams
           .map(
             (t) => `<li>
-              <span>${escapeHtml(t.name)}</span>
+              <button class="team-link" data-pteam="${t.id}">${escapeHtml(t.name)}</button>
               ${t.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
-              <span class="e-user">${t.members}人 <button class="btn-text" data-pteam="${t.id}">開く</button></span>
+              <span class="e-user">${t.members}人</span>
             </li>`
           )
           .join("")

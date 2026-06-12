@@ -105,66 +105,10 @@
         </div>
       </div>
 
-      <!-- ルーム(カード表示。タップでマッチング待機へ) -->
+      <!-- ルーム(カード表示。タップで詳細モーダルへ) -->
       <div class="panel panel-wide" id="rooms-panel">
         <h3>ルーム <button id="btn-room-new" class="btn-small hidden" style="float:right">ルームを作成</button></h3>
         <div id="room-list" class="room-cards"></div>
-        <div id="room-form-wrap" class="hidden">
-          <div class="team-detail-head"><strong id="room-form-title">ルームを作成</strong></div>
-          <form id="room-form">
-            <label>ルーム名
-              <input type="text" id="room-name" required maxlength="100">
-            </label>
-            <label>見える範囲
-              <select id="room-team"><option value="">サイト全体</option></select>
-            </label>
-            <label>入る際の合言葉（空欄で無し）
-              <input type="text" id="room-pass" maxlength="100">
-            </label>
-            <label>話題カード（空欄でなし）
-              <input type="text" id="room-topic" maxlength="200" placeholder="例: 最近うれしかったこと">
-            </label>
-            <label>定員（0=無制限）
-              <input type="number" id="room-capacity" min="0" max="100" value="0">
-            </label>
-            <label>存在期間（時間。空欄で無期限）
-              <input type="number" id="room-expires" min="1" max="720">
-            </label>
-            <div class="setting-group">
-              <div class="setting-group-title">通話設定の上書き（サイト設定より優先）</div>
-              <label>セッション時間（分。空欄でサイト設定）
-                <input type="number" id="room-minutes" min="1" max="60">
-              </label>
-              <label>役割マッチング
-                <select id="room-role-matching">
-                  <option value="">サイト設定に従う</option>
-                  <option value="true">話し手×聞き手</option>
-                  <option value="false">役割なし</option>
-                </select>
-              </label>
-              <label class="checkbox-label"><input type="checkbox" id="room-modes-override"> 表示モードを上書きする</label>
-              <div id="room-modes-list" class="hidden">
-                <label class="checkbox-label"><input type="checkbox" id="room-mode-toon" checked> デフォルメ</label>
-                <label class="checkbox-label"><input type="checkbox" id="room-mode-real" checked> リアル</label>
-                <label class="checkbox-label"><input type="checkbox" id="room-mode-still" checked> 静止画</label>
-                <label class="checkbox-label"><input type="checkbox" id="room-mode-camera"> 実映像</label>
-              </div>
-            </div>
-            <div id="room-managers-wrap" class="hidden">
-              <div class="setting-group-title">ルーム管理者（設定を変更できるユーザー）</div>
-              <div class="inline-form">
-                <input type="text" id="room-manager-name" placeholder="ユーザー名" maxlength="50">
-                <button type="button" id="btn-room-manager-add" class="btn-small">追加</button>
-              </div>
-              <ul id="room-manager-list" class="history-list"></ul>
-            </div>
-            <div class="btn-row">
-              <button type="submit" class="btn-small" id="room-form-submit">作成</button>
-              <button type="button" id="room-form-cancel" class="btn-text">閉じる</button>
-            </div>
-            <p id="room-form-error" class="error"></p>
-          </form>
-        </div>
         <p id="room-error" class="error"></p>
       </div>
 
@@ -759,6 +703,66 @@
       <h3 id="modal-title"></h3>
       <div id="modal-body"></div>
       <div class="btn-row" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- ルーム作成・編集モーダル -->
+  <div id="room-form-overlay" class="overlay hidden">
+    <div class="overlay-box">
+      <h3 id="room-form-title">ルームを作成</h3>
+      <form id="room-form">
+        <label>ルーム名
+          <input type="text" id="room-name" required maxlength="100">
+        </label>
+        <label>見える範囲
+          <select id="room-team"><option value="">サイト全体</option></select>
+        </label>
+        <label>入る際の合言葉（空欄で無し）
+          <input type="text" id="room-pass" maxlength="100">
+        </label>
+        <label>話題カード（空欄でなし）
+          <input type="text" id="room-topic" maxlength="200" placeholder="例: 最近うれしかったこと">
+        </label>
+        <label>定員（0=無制限）
+          <input type="number" id="room-capacity" min="0" max="100" value="0">
+        </label>
+        <label>存在期間（時間。空欄で無期限）
+          <input type="number" id="room-expires" min="1" max="720">
+        </label>
+        <div class="setting-group">
+          <div class="setting-group-title">通話設定の上書き（サイト設定より優先）</div>
+          <label>セッション時間（分。空欄でサイト設定）
+            <input type="number" id="room-minutes" min="1" max="60">
+          </label>
+          <label>役割マッチング
+            <select id="room-role-matching">
+              <option value="">サイト設定に従う</option>
+              <option value="true">話し手×聞き手</option>
+              <option value="false">役割なし</option>
+            </select>
+          </label>
+          <label class="checkbox-label"><input type="checkbox" id="room-modes-override"> 表示モードを上書きする</label>
+          <div id="room-modes-list" class="hidden">
+            <label class="checkbox-label"><input type="checkbox" id="room-mode-toon" checked> デフォルメ</label>
+            <label class="checkbox-label"><input type="checkbox" id="room-mode-real" checked> リアル</label>
+            <label class="checkbox-label"><input type="checkbox" id="room-mode-still" checked> 静止画</label>
+            <label class="checkbox-label"><input type="checkbox" id="room-mode-camera"> 実映像</label>
+          </div>
+        </div>
+        <div id="room-managers-wrap" class="hidden">
+          <div class="setting-group-title">ルーム管理者（設定を変更できるユーザー）</div>
+          <div class="inline-form">
+            <input type="text" id="room-manager-name" placeholder="ユーザー名" maxlength="50">
+            <button type="button" id="btn-room-manager-add" class="btn-small">追加</button>
+          </div>
+          <ul id="room-manager-list" class="history-list"></ul>
+        </div>
+        <div class="btn-row">
+          <button type="submit" class="btn-primary" id="room-form-submit">作成</button>
+          <button type="button" id="room-form-cancel" class="btn-secondary">キャンセル</button>
+        </div>
+        <p id="room-form-error" class="error"></p>
+      </form>
     </div>
   </div>
 
