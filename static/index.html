@@ -120,12 +120,7 @@
           </div>
           <div id="calendar" class="calendar"></div>
           <ul id="event-list" class="event-list"></ul>
-          <form id="event-form" class="inline-form">
-            <input type="date" id="event-date" required>
-            <input type="text" id="event-title" placeholder="イベント名" required maxlength="200">
-            <select id="event-room" class="scope-select event-room-select"><option value="">ルーム連携なし</option></select>
-            <button type="submit" class="btn-small">追加</button>
-          </form>
+          <button type="button" id="btn-event-new" class="btn-small">イベントを作成</button>
         </div>
 
         <div class="panel">
@@ -680,6 +675,32 @@
       <h3 id="modal-title"></h3>
       <div id="modal-body"></div>
       <div class="btn-row" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- イベント作成モーダル -->
+  <div id="event-overlay" class="overlay hidden">
+    <div class="overlay-box">
+      <h3>イベントを作成</h3>
+      <form id="event-form">
+        <label>日付
+          <input type="date" id="event-date" required>
+        </label>
+        <label>イベント名
+          <input type="text" id="event-title" required maxlength="200" placeholder="例: みんなで傾聴会">
+        </label>
+        <label>公開範囲
+          <select id="event-scope-modal"><option value="">サイト全体</option></select>
+        </label>
+        <label>ルーム連携（任意。予定からワンタップで参加できます）
+          <select id="event-room"><option value="">ルーム連携なし</option></select>
+        </label>
+        <div class="btn-row">
+          <button type="submit" class="btn-primary">作成する</button>
+          <button type="button" id="btn-event-cancel" class="btn-secondary">キャンセル</button>
+        </div>
+        <p id="event-form-error" class="error"></p>
+      </form>
     </div>
   </div>
 

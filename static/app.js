@@ -1666,8 +1666,8 @@ function fetchPosts() {
 async function loadTeams() {
   myTeams = await api("/api/teams");
   renderTeamPanel();
-  // 掲示板・カレンダーのスコープ切替を所属チームで更新
-  for (const [selId, cur] of [["post-scope", postScope], ["event-scope", eventScope]]) {
+  // 掲示板・カレンダーのスコープ切替(+イベント作成モーダルの公開範囲)を所属チームで更新
+  for (const [selId, cur] of [["post-scope", postScope], ["event-scope", eventScope], ["event-scope-modal", ""]]) {
     const el = $(selId);
     el.innerHTML =
       '<option value="">サイト全体</option>' +
@@ -2001,9 +2001,9 @@ function renderCalendar() {
   }
   $("calendar").innerHTML = html;
 
-  // 日付クリックでイベント追加フォームに反映
+  // 日付クリックでその日のイベント作成モーダルを開く
   $("calendar").querySelectorAll(".day").forEach((el) => {
-    el.onclick = () => { $("event-date").value = el.dataset.date; };
+    el.onclick = () => openEventModal(el.dataset.date);
   });
 }
 
@@ -2043,23 +2043,44 @@ $("cal-next").onclick = () => {
   loadEvents().catch(() => {});
 };
 
+/* イベント作成モーダルを開く(日付プリセット可。公開範囲は現在の表示スコープを引き継ぐ) */
+function openEventModal(date) {
+  $("event-form-error").textContent = "";
+  $("event-date").value = date || "";
+  $("event-title").value = "";
+  $("event-scope-modal").value =
+    eventScope && [...$("event-scope-modal").options].some((o) => o.value === eventScope)
+      ? eventScope
+      : "";
+  $("event-room").value = "";
+  $("event-overlay").classList.remove("hidden");
+  $("event-title").focus();
+}
+
+$("btn-event-new").onclick = () => openEventModal("");
+$("btn-event-cancel").onclick = () => $("event-overlay").classList.add("hidden");
+
 $("event-form").onsubmit = async (e) => {
   e.preventDefault();
+  $("event-form-error").textContent = "";
+  const scope = $("event-scope-modal").value;
   try {
     await api("/api/events", "POST", {
       title: $("event-title").value.trim(),
       date: $("event-date").value,
-      team_id: eventScope ? parseInt(eventScope, 10) : null,
+      team_id: scope ? parseInt(scope, 10) : null,
       room_id: $("event-room").value ? parseInt($("event-room").value, 10) : null,
     });
-    $("event-title").value = "";
-    // 追加したイベントの月を表示
+    $("event-overlay").classList.add("hidden");
+    // 作成したイベントが見えるよう、表示スコープと月を合わせる
+    eventScope = scope;
+    $("event-scope").value = scope;
     const [y, m] = $("event-date").value.split("-").map(Number);
     calYear = y;
     calMonth = m - 1;
     await loadEvents();
   } catch (err) {
-    $("lobby-error").textContent = err.message;
+    $("event-form-error").textContent = err.message;
   }
 };
 
