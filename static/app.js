@@ -1284,20 +1284,20 @@ let monthEvents = [];
 
 async function loadDashboard() {
   try {
-    const [announcements, posts, stats, history, config] = await Promise.all([
+    const [announcements, stats, history, config] = await Promise.all([
       api("/api/announcements"),
-      api("/api/posts"),
       api("/api/stats"),
       api("/api/surveys/mine"),
       api("/api/config"),
     ]);
     renderAnnouncements(announcements);
-    renderPosts(posts);
     renderHistory(history);
     sessionMinutes = config.session_minutes || 10;
     siteConfig = config;
     applyMatchingUI();
     renderStats(stats);
+    await loadTeams();
+    renderPosts(await fetchPosts());
     await loadEvents();
   } catch (err) {
     $("lobby-error").textContent = err.message;
@@ -1384,10 +1384,118 @@ function renderHistory(items) {
     : '<li class="empty-note">まだ通話履歴がありません</li>';
 }
 
+// ---- チーム -------------------------------------------------------------------
+let myTeams = [];
+let postScope = "";   // ""=サイト全体 / チームID文字列
+let eventScope = "";
+let currentTeamId = null;
+let currentTeamLeader = false;
+
+function fetchPosts() {
+  return api("/api/posts" + (postScope ? `?team_id=${postScope}` : ""));
+}
+
+async function loadTeams() {
+  myTeams = await api("/api/teams");
+  renderTeamPanel();
+  // 掲示板・カレンダーのスコープ切替を所属チームで更新
+  for (const [selId, cur] of [["post-scope", postScope], ["event-scope", eventScope]]) {
+    const el = $(selId);
+    el.innerHTML =
+      '<option value="">サイト全体</option>' +
+      myTeams.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
+    el.value = myTeams.some((t) => String(t.id) === cur) ? cur : "";
+  }
+  postScope = $("post-scope").value;
+  eventScope = $("event-scope").value;
+}
+
+$("post-scope").onchange = async () => {
+  postScope = $("post-scope").value;
+  try { renderPosts(await fetchPosts()); } catch (err) { $("lobby-error").textContent = err.message; }
+};
+$("event-scope").onchange = async () => {
+  eventScope = $("event-scope").value;
+  loadEvents().catch(() => {});
+};
+
+function renderTeamPanel() {
+  $("team-list").innerHTML = myTeams.length
+    ? myTeams
+        .map(
+          (t) => `<li>
+            <span>${escapeHtml(t.name)}</span>
+            ${t.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
+            <span class="e-user">${t.members}人
+              <button class="btn-text" data-team="${t.id}" data-name="${escapeHtml(t.name)}" data-leader="${t.is_leader}">メンバー</button>
+            </span>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">所属チームはありません</li>';
+  $("team-list").querySelectorAll("[data-team]").forEach((btn) => {
+    btn.onclick = () => showTeamMembers(btn.dataset.team, btn.dataset.name, btn.dataset.leader === "true");
+  });
+}
+
+async function showTeamMembers(teamId, name, isLeader) {
+  $("team-error").textContent = "";
+  try {
+    const [data, stats] = await Promise.all([
+      api(`/api/teams/${teamId}/members`),
+      api(`/api/teams/${teamId}/stats`),
+    ]);
+    currentTeamId = teamId;
+    currentTeamLeader = isLeader;
+    $("team-detail").classList.remove("hidden");
+    $("team-detail-name").textContent = name;
+    $("team-detail-stats").textContent = `メンバー${stats.members}人 / セッション${stats.sessions}回`;
+    $("team-invite-form").classList.toggle("hidden", !isLeader);
+    $("team-member-list").innerHTML = data.members
+      .map(
+        (m) => `<li>
+          <span>${escapeHtml(m.username)}</span>
+          ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
+          ${isLeader && !m.is_leader ? `<span class="h-date"><button class="btn-text danger" data-remove="${m.user_id}">削除</button></span>` : ""}
+        </li>`
+      )
+      .join("");
+    $("team-member-list").querySelectorAll("[data-remove]").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/api/teams/${teamId}/members/${btn.dataset.remove}`, "DELETE");
+          await loadTeams();
+          await showTeamMembers(teamId, name, isLeader);
+        } catch (err) {
+          $("team-error").textContent = err.message;
+        }
+      };
+    });
+  } catch (err) {
+    $("team-error").textContent = err.message;
+  }
+}
+
+$("team-invite-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("team-error").textContent = "";
+  try {
+    await api(`/api/teams/${currentTeamId}/members`, "POST", {
+      username: $("team-invite-name").value.trim(),
+    });
+    $("team-invite-name").value = "";
+    await loadTeams();
+    const t = myTeams.find((x) => String(x.id) === String(currentTeamId));
+    if (t) await showTeamMembers(t.id, t.name, t.is_leader);
+  } catch (err) {
+    $("team-error").textContent = err.message;
+  }
+};
+
 // ---- イベントカレンダー --------------------------------------------------------
 async function loadEvents() {
   const month = `${calYear}-${String(calMonth + 1).padStart(2, "0")}`;
-  monthEvents = await api(`/api/events?month=${month}`);
+  monthEvents = await api(`/api/events?month=${month}` + (eventScope ? `&team_id=${eventScope}` : ""));
   renderCalendar();
   renderEventList();
 }
@@ -1451,6 +1559,7 @@ $("event-form").onsubmit = async (e) => {
     await api("/api/events", "POST", {
       title: $("event-title").value.trim(),
       date: $("event-date").value,
+      team_id: eventScope ? parseInt(eventScope, 10) : null,
     });
     $("event-title").value = "";
     // 追加したイベントの月を表示
@@ -1469,9 +1578,9 @@ $("post-form").onsubmit = async (e) => {
   const body = $("post-body").value.trim();
   if (!body) return;
   try {
-    await api("/api/posts", "POST", { body });
+    await api("/api/posts", "POST", { body, team_id: postScope ? parseInt(postScope, 10) : null });
     $("post-body").value = "";
-    renderPosts(await api("/api/posts"));
+    renderPosts(await fetchPosts());
   } catch (err) {
     $("lobby-error").textContent = err.message;
   }
@@ -1494,7 +1603,12 @@ async function showAdmin() {
   $("admin-error").textContent = "";
   showScreen("admin");
   try {
-    await Promise.all([loadAdminUsers(), loadAdminSettings(), loadAdminAnnouncements()]);
+    await Promise.all([
+      loadAdminUsers(),
+      loadAdminSettings(),
+      loadAdminAnnouncements(),
+      loadAdminTeams(),
+    ]);
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
@@ -1612,6 +1726,119 @@ $("admin-settings-form").onsubmit = async (e) => {
     $("admin-settings-msg").textContent = "保存しました";
   } catch (err) {
     $("admin-settings-msg").textContent = err.message;
+  }
+};
+
+// --- チーム管理(サイト管理者) ---
+let adminTeamId = null;
+let adminTeamName = "";
+
+async function loadAdminTeams() {
+  const teams = await api("/api/admin/teams");
+  $("admin-team-list").innerHTML = teams.length
+    ? teams
+        .map(
+          (t) => `<li>
+            <span>${escapeHtml(t.name)}</span>
+            <span class="e-user">${t.members}人${t.leaders.length ? ` / リーダー: ${t.leaders.map(escapeHtml).join(", ")}` : ""}
+              <button class="btn-text" data-tmembers="${t.id}" data-name="${escapeHtml(t.name)}">管理</button>
+              <button class="btn-text danger" data-tdelete="${t.id}" data-name="${escapeHtml(t.name)}">削除</button>
+            </span>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">チームはまだありません</li>';
+  $("admin-team-list").querySelectorAll("[data-tmembers]").forEach((btn) => {
+    btn.onclick = () => showAdminTeam(btn.dataset.tmembers, btn.dataset.name);
+  });
+  $("admin-team-list").querySelectorAll("[data-tdelete]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm(`チーム「${btn.dataset.name}」を削除します。チーム限定の投稿・予定も削除されます。よろしいですか？`)) return;
+      try {
+        await api(`/api/admin/teams/${btn.dataset.tdelete}`, "DELETE");
+        $("admin-team-detail").classList.add("hidden");
+        await loadAdminTeams();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
+  });
+}
+
+async function showAdminTeam(teamId, name) {
+  try {
+    const data = await api(`/api/teams/${teamId}/members`);
+    adminTeamId = teamId;
+    adminTeamName = name;
+    $("admin-team-detail").classList.remove("hidden");
+    $("admin-team-title").textContent = name;
+    $("admin-team-members").innerHTML = data.members.length
+      ? data.members
+          .map(
+            (m) => `<li>
+              <span>${escapeHtml(m.username)}</span>
+              ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
+              <span class="h-date">
+                <button class="btn-text" data-lead="${m.user_id}" data-flag="${!m.is_leader}">${m.is_leader ? "リーダー解除" : "リーダーにする"}</button>
+                <button class="btn-text danger" data-tremove="${m.user_id}">外す</button>
+              </span>
+            </li>`
+          )
+          .join("")
+      : '<li class="empty-note">メンバーがいません</li>';
+    $("admin-team-members").querySelectorAll("[data-lead]").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/api/admin/teams/${teamId}/members/${btn.dataset.lead}`, "PUT", {
+            is_leader: btn.dataset.flag === "true",
+          });
+          await loadAdminTeams();
+          await showAdminTeam(teamId, name);
+        } catch (err) {
+          $("admin-error").textContent = err.message;
+        }
+      };
+    });
+    $("admin-team-members").querySelectorAll("[data-tremove]").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          await api(`/api/teams/${teamId}/members/${btn.dataset.tremove}`, "DELETE");
+          await loadAdminTeams();
+          await showAdminTeam(teamId, name);
+        } catch (err) {
+          $("admin-error").textContent = err.message;
+        }
+      };
+    });
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+}
+
+$("admin-team-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("admin-error").textContent = "";
+  try {
+    await api("/api/admin/teams", "POST", { name: $("new-team-name").value.trim() });
+    $("new-team-name").value = "";
+    await loadAdminTeams();
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+};
+
+$("admin-team-member-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("admin-error").textContent = "";
+  try {
+    await api(`/api/teams/${adminTeamId}/members`, "POST", {
+      username: $("team-member-name").value.trim(),
+    });
+    $("team-member-name").value = "";
+    await loadAdminTeams();
+    await showAdminTeam(adminTeamId, adminTeamName);
+  } catch (err) {
+    $("admin-error").textContent = err.message;
   }
 };
 

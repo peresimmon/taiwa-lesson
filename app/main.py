@@ -24,6 +24,8 @@ from .database import (
     Setting,
     Site,
     Survey,
+    Team,
+    TeamMember,
     User,
     get_db,
     init_db,
@@ -208,10 +210,25 @@ class SurveyIn(BaseModel):
 class EventIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    team_id: int | None = None  # 指定するとチーム限定の予定
 
 
 class PostIn(BaseModel):
     body: str = Field(min_length=1, max_length=1000)
+    team_id: int | None = None  # 指定するとチーム限定の投稿
+
+
+class TeamIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class TeamMemberIn(BaseModel):
+    username: str = Field(min_length=2, max_length=50)
+    is_leader: bool = False  # サイト管理者の追加時のみ有効
+
+
+class LeaderIn(BaseModel):
+    is_leader: bool
 
 
 class AnnouncementIn(BaseModel):
@@ -414,6 +431,159 @@ def my_surveys(user: User = Depends(active_user), db: Session = Depends(get_db))
     ]
 
 
+# --- チーム ---------------------------------------------------------------------
+
+
+def _team_or_404(db: Session, user: User, team_id: int) -> Team:
+    team = db.get(Team, team_id)
+    if team is None or team.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="チームが存在しません")
+    return team
+
+
+def _membership(db: Session, team_id: int, user_id: int) -> TeamMember | None:
+    return (
+        db.query(TeamMember)
+        .filter(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
+        .first()
+    )
+
+
+def _is_site_admin(user: User) -> bool:
+    return user.role in ("site_admin", "system_admin")
+
+
+def _require_team_member(db: Session, user: User, team_id: int) -> Team:
+    """チームのメンバー(またはサイト管理者)であることを要求する"""
+    team = _team_or_404(db, user, team_id)
+    if not _is_site_admin(user) and _membership(db, team_id, user.id) is None:
+        raise HTTPException(status_code=403, detail="このチームのメンバーではありません")
+    return team
+
+
+def _require_team_leader(db: Session, user: User, team_id: int) -> Team:
+    """チームリーダー(またはサイト管理者)であることを要求する"""
+    team = _team_or_404(db, user, team_id)
+    if not _is_site_admin(user):
+        m = _membership(db, team_id, user.id)
+        if m is None or not m.is_leader:
+            raise HTTPException(status_code=403, detail="チームリーダー権限が必要です")
+    return team
+
+
+@app.get("/api/teams")
+def my_teams(user: User = Depends(active_user), db: Session = Depends(get_db)):
+    """自分の所属チーム一覧"""
+    from sqlalchemy import func
+
+    counts = dict(
+        db.query(TeamMember.team_id, func.count(TeamMember.id))
+        .group_by(TeamMember.team_id)
+        .all()
+    )
+    rows = (
+        db.query(Team, TeamMember)
+        .join(TeamMember, TeamMember.team_id == Team.id)
+        .filter(Team.site_id == user.site_id, TeamMember.user_id == user.id)
+        .order_by(Team.id)
+        .all()
+    )
+    return [
+        {
+            "id": t.id,
+            "name": t.name,
+            "is_leader": m.is_leader,
+            "members": counts.get(t.id, 0),
+        }
+        for t, m in rows
+    ]
+
+
+@app.get("/api/teams/{team_id}/members")
+def team_members(
+    team_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    team = _require_team_member(db, user, team_id)
+    rows = (
+        db.query(TeamMember, User.username)
+        .join(User, TeamMember.user_id == User.id)
+        .filter(TeamMember.team_id == team_id)
+        .order_by(TeamMember.id)
+        .all()
+    )
+    return {
+        "team": team.name,
+        "members": [
+            {"user_id": m.user_id, "username": name, "is_leader": m.is_leader}
+            for m, name in rows
+        ],
+    }
+
+
+@app.post("/api/teams/{team_id}/members", status_code=201)
+def team_add_member(
+    team_id: int,
+    body: TeamMemberIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """メンバー追加。チームリーダーは自チームへ招待可。リーダー指定はサイト管理者のみ"""
+    _require_team_leader(db, user, team_id)
+    target = (
+        db.query(User)
+        .filter(User.site_id == user.site_id, User.username == body.username)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    if _membership(db, team_id, target.id):
+        raise HTTPException(status_code=409, detail="既にチームのメンバーです")
+    is_leader = body.is_leader if _is_site_admin(user) else False
+    db.add(TeamMember(team_id=team_id, user_id=target.id, is_leader=is_leader))
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/teams/{team_id}/members/{user_id}")
+def team_remove_member(
+    team_id: int,
+    user_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    _require_team_leader(db, user, team_id)
+    m = _membership(db, team_id, user_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="チームのメンバーではありません")
+    if m.is_leader and not _is_site_admin(user):
+        raise HTTPException(status_code=403, detail="リーダーの削除はサイト管理者のみ可能です")
+    db.delete(m)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/teams/{team_id}/stats")
+def team_stats(
+    team_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """チーム単位の統計(メンバー数・メンバーのセッション数合計)"""
+    _require_team_member(db, user, team_id)
+    member_ids = [
+        m.user_id
+        for m in db.query(TeamMember).filter(TeamMember.team_id == team_id).all()
+    ]
+    sessions = (
+        db.query(Survey).filter(Survey.user_id.in_(member_ids)).count()
+        if member_ids
+        else 0
+    )
+    return {"members": len(member_ids), "sessions": sessions}
+
+
 # --- ダッシュボード(お知らせ・イベント・掲示板・統計) ---------------------------
 
 
@@ -440,19 +610,24 @@ def announcements(user: User = Depends(active_user), db: Session = Depends(get_d
 @app.get("/api/events")
 def list_events(
     month: str,
+    team_id: int | None = None,
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
-    """指定月(YYYY-MM)のイベント一覧(自サイトのみ)"""
+    """指定月(YYYY-MM)のイベント一覧。team_id指定でチーム限定の予定"""
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=422, detail="monthはYYYY-MM形式で指定してください")
-    rows = (
+    q = (
         db.query(Event, User.username)
         .join(User, Event.user_id == User.id)
         .filter(User.site_id == user.site_id, Event.date.like(f"{month}-%"))
-        .order_by(Event.date)
-        .all()
     )
+    if team_id:
+        _require_team_member(db, user, team_id)
+        q = q.filter(Event.team_id == team_id)
+    else:
+        q = q.filter(Event.team_id.is_(None))
+    rows = q.order_by(Event.date).all()
     return [
         {"id": e.id, "title": e.title, "date": e.date, "username": name}
         for e, name in rows
@@ -465,22 +640,32 @@ def create_event(
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
-    event = Event(user_id=user.id, title=body.title, date=body.date)
+    if body.team_id:
+        _require_team_member(db, user, body.team_id)
+    event = Event(user_id=user.id, title=body.title, date=body.date, team_id=body.team_id)
     db.add(event)
     db.commit()
     return {"ok": True, "id": event.id}
 
 
 @app.get("/api/posts")
-def list_posts(user: User = Depends(active_user), db: Session = Depends(get_db)):
-    rows = (
+def list_posts(
+    team_id: int | None = None,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """掲示板の投稿一覧。team_id指定でチーム限定の掲示板"""
+    q = (
         db.query(Post, User.username)
         .join(User, Post.user_id == User.id)
         .filter(User.site_id == user.site_id)
-        .order_by(Post.created_at.desc())
-        .limit(30)
-        .all()
     )
+    if team_id:
+        _require_team_member(db, user, team_id)
+        q = q.filter(Post.team_id == team_id)
+    else:
+        q = q.filter(Post.team_id.is_(None))
+    rows = q.order_by(Post.created_at.desc()).limit(30).all()
     return [
         {
             "id": p.id,
@@ -498,7 +683,9 @@ def create_post(
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
-    post = Post(user_id=user.id, body=body.body)
+    if body.team_id:
+        _require_team_member(db, user, body.team_id)
+    post = Post(user_id=user.id, body=body.body, team_id=body.team_id)
     db.add(post)
     db.commit()
     return {"ok": True, "id": post.id}
@@ -619,6 +806,7 @@ def admin_delete_user(
     db.query(Survey).filter(Survey.user_id == user_id).delete()
     db.query(Event).filter(Event.user_id == user_id).delete()
     db.query(Post).filter(Post.user_id == user_id).delete()
+    db.query(TeamMember).filter(TeamMember.user_id == user_id).delete()
     db.delete(target)
     db.commit()
     return {"ok": True}
@@ -694,6 +882,82 @@ def admin_delete_announcement(
     return {"ok": True}
 
 
+@app.get("/api/admin/teams")
+def admin_list_teams(admin: User = Depends(site_admin_user), db: Session = Depends(get_db)):
+    """自サイトのチーム一覧(メンバー数・リーダー名つき)"""
+    from sqlalchemy import func
+
+    counts = dict(
+        db.query(TeamMember.team_id, func.count(TeamMember.id))
+        .group_by(TeamMember.team_id)
+        .all()
+    )
+    leaders: dict[int, list[str]] = {}
+    for m, name in (
+        db.query(TeamMember, User.username)
+        .join(User, TeamMember.user_id == User.id)
+        .filter(TeamMember.is_leader.is_(True))
+        .all()
+    ):
+        leaders.setdefault(m.team_id, []).append(name)
+    rows = db.query(Team).filter(Team.site_id == admin.site_id).order_by(Team.id).all()
+    return [
+        {
+            "id": t.id,
+            "name": t.name,
+            "members": counts.get(t.id, 0),
+            "leaders": leaders.get(t.id, []),
+        }
+        for t in rows
+    ]
+
+
+@app.post("/api/admin/teams", status_code=201)
+def admin_create_team(
+    body: TeamIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    team = Team(site_id=admin.site_id, name=body.name)
+    db.add(team)
+    db.commit()
+    return {"ok": True, "id": team.id}
+
+
+@app.delete("/api/admin/teams/{team_id}")
+def admin_delete_team(
+    team_id: int,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    """チームと所属情報・チーム限定の投稿/予定を削除する"""
+    team = _team_or_404(db, admin, team_id)
+    db.query(TeamMember).filter(TeamMember.team_id == team_id).delete(synchronize_session=False)
+    db.query(Post).filter(Post.team_id == team_id).delete(synchronize_session=False)
+    db.query(Event).filter(Event.team_id == team_id).delete(synchronize_session=False)
+    db.delete(team)
+    db.commit()
+    return {"ok": True}
+
+
+@app.put("/api/admin/teams/{team_id}/members/{user_id}")
+def admin_set_team_leader(
+    team_id: int,
+    user_id: int,
+    body: LeaderIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    """チームリーダーの設定/解除(サイト管理者のみ)"""
+    _team_or_404(db, admin, team_id)
+    m = _membership(db, team_id, user_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="チームのメンバーではありません")
+    m.is_leader = body.is_leader
+    db.commit()
+    return {"ok": True}
+
+
 # --- システム管理者API -----------------------------------------------------------
 
 
@@ -762,7 +1026,9 @@ def sysadmin_delete_site(
         db.query(Survey).filter(Survey.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
+        db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+    db.query(Team).filter(Team.site_id == site_id).delete(synchronize_session=False)
     db.query(Announcement).filter(Announcement.site_id == site_id).delete(synchronize_session=False)
     db.query(Setting).filter(Setting.site_id == site_id).delete(synchronize_session=False)
     db.delete(site)

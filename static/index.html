@@ -104,7 +104,7 @@
         </div>
 
         <div class="panel">
-          <h3>イベントカレンダー</h3>
+          <h3>イベントカレンダー <select id="event-scope" class="scope-select"><option value="">サイト全体</option></select></h3>
           <div class="cal-header">
             <button id="cal-prev" class="btn-text">◀</button>
             <strong id="cal-title"></strong>
@@ -120,7 +120,7 @@
         </div>
 
         <div class="panel">
-          <h3>みんなの掲示板</h3>
+          <h3>みんなの掲示板 <select id="post-scope" class="scope-select"><option value="">サイト全体</option></select></h3>
           <form id="post-form" class="inline-form">
             <input type="text" id="post-body" placeholder="気づきや感想をシェア…" required maxlength="1000">
             <button type="submit" class="btn-small">投稿</button>
@@ -131,6 +131,23 @@
         <div class="panel">
           <h3>セッション履歴</h3>
           <ul id="history-list" class="history-list"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>マイチーム</h3>
+          <ul id="team-list" class="event-list"></ul>
+          <div id="team-detail" class="hidden">
+            <div class="team-detail-head">
+              <strong id="team-detail-name"></strong>
+              <span id="team-detail-stats" class="note"></span>
+            </div>
+            <form id="team-invite-form" class="inline-form hidden">
+              <input type="text" id="team-invite-name" placeholder="ユーザー名を招待" required minlength="2" maxlength="50">
+              <button type="submit" class="btn-small">招待</button>
+            </form>
+            <ul id="team-member-list" class="history-list"></ul>
+          </div>
+          <p id="team-error" class="error"></p>
         </div>
       </div>
     </section>
@@ -296,6 +313,23 @@
             <button type="submit" class="btn-small">設定を保存</button>
             <p id="admin-settings-msg" class="note"></p>
           </form>
+        </div>
+
+        <div class="panel">
+          <h3>チーム管理</h3>
+          <form id="admin-team-form" class="inline-form">
+            <input type="text" id="new-team-name" placeholder="チーム名" required maxlength="100">
+            <button type="submit" class="btn-small">チーム作成</button>
+          </form>
+          <ul id="admin-team-list" class="event-list"></ul>
+          <div id="admin-team-detail" class="hidden">
+            <div class="team-detail-head"><strong id="admin-team-title"></strong></div>
+            <form id="admin-team-member-form" class="inline-form">
+              <input type="text" id="team-member-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
+              <button type="submit" class="btn-small">メンバー追加</button>
+            </form>
+            <ul id="admin-team-members" class="history-list"></ul>
+          </div>
         </div>
 
         <div class="panel">

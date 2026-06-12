@@ -83,25 +83,51 @@ class Announcement(Base):
 
 
 class Event(Base):
-    """イベントカレンダーの予定(ユーザーが登録可能)"""
+    """イベントカレンダーの予定(ユーザーが登録可能。team_id付きはチーム限定)"""
 
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(200))
     date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Post(Base):
-    """みんなの掲示板への投稿"""
+    """みんなの掲示板への投稿(team_id付きはチーム限定)"""
 
     __tablename__ = "posts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True, index=True)
     body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Team(Base):
+    """サイト内のチーム。スケジュールや掲示板をチーム単位でも使える"""
+
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TeamMember(Base):
+    """チーム所属(複数チーム所属可)。is_leader=チームリーダー"""
+
+    __tablename__ = "team_members"
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_members"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    is_leader: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -150,6 +176,10 @@ def _migrate() -> None:
         ann_cols = cols(conn, "announcements")
         if ann_cols and "site_id" not in ann_cols:
             conn.execute(text("ALTER TABLE announcements ADD COLUMN site_id INTEGER NOT NULL DEFAULT 0"))
+        for table in ("events", "posts"):
+            tcols = cols(conn, table)
+            if tcols and "team_id" not in tcols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN team_id INTEGER"))
         set_cols = cols(conn, "settings")
         if set_cols and "site_id" not in set_cols:
             # 旧スキーマ(キーのみ)は作り直す。設定はデフォルト値に戻る

@@ -485,6 +485,97 @@ async def test_phase2_settings(users, admin_headers):
           r.json()["role_matching"] is True and "聴けた" in r.json()["survey_question"], r.text)
 
 
+def test_teams(users, admin_headers):
+    print("[11] チーム")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}  # リーダーにするユーザー
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}  # 一般メンバー
+
+    # 部外者用ユーザー
+    suffix = secrets.token_hex(3)
+    r = requests.post(f"{BASE}/api/register", json={"username": f"outsider_{suffix}", "password": "pass123"})
+    h_out = {"Authorization": f"Bearer {r.json()['token']}"}
+
+    # チーム作成はサイト管理者のみ
+    r = requests.post(f"{BASE}/api/admin/teams", headers=h0, json={"name": "もぐり"})
+    check("一般ユーザーはチーム作成不可", r.status_code == 403, r.text)
+    r = requests.post(f"{BASE}/api/admin/teams", headers=admin_headers, json={"name": f"開発チーム_{suffix}"})
+    check("チーム作成", r.status_code == 201, r.text)
+    tid = r.json()["id"]
+
+    # メンバー追加(管理者はリーダー指定可)
+    r = requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                      json={"username": users[0]["username"], "is_leader": True})
+    check("リーダーを追加", r.status_code == 201, r.text)
+    r = requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                      json={"username": users[0]["username"]})
+    check("重複追加は409", r.status_code == 409, r.text)
+
+    # 所属チーム一覧
+    r = requests.get(f"{BASE}/api/teams", headers=h0)
+    teams = r.json()
+    check("所属チームが見える", any(t["id"] == tid and t["is_leader"] for t in teams), teams)
+    r = requests.get(f"{BASE}/api/teams", headers=h_out)
+    check("部外者の一覧には出ない", all(t["id"] != tid for t in r.json()), r.text)
+
+    # リーダーが招待できる(リーダー指定は無視される)
+    r = requests.post(f"{BASE}/api/teams/{tid}/members", headers=h0,
+                      json={"username": users[1]["username"], "is_leader": True})
+    check("リーダーが招待できる", r.status_code == 201, r.text)
+    r = requests.get(f"{BASE}/api/teams/{tid}/members", headers=h1)
+    members = r.json()["members"]
+    m1 = next(m for m in members if m["username"] == users[1]["username"])
+    check("リーダー指定は管理者のみ有効", m1["is_leader"] is False, members)
+
+    # 一般メンバーは招待できない / 部外者は閲覧できない
+    r = requests.post(f"{BASE}/api/teams/{tid}/members", headers=h1,
+                      json={"username": f"outsider_{suffix}"})
+    check("一般メンバーは招待不可", r.status_code == 403, r.text)
+    r = requests.get(f"{BASE}/api/teams/{tid}/members", headers=h_out)
+    check("部外者はメンバー一覧を見られない", r.status_code == 403, r.text)
+
+    # チーム限定の掲示板
+    r = requests.post(f"{BASE}/api/posts", headers=h0, json={"body": "チームだけの連絡", "team_id": tid})
+    check("チーム投稿", r.status_code == 201, r.text)
+    r = requests.get(f"{BASE}/api/posts", headers=h0)
+    check("サイト全体には出ない", all(p["body"] != "チームだけの連絡" for p in r.json()), r.text)
+    r = requests.get(f"{BASE}/api/posts?team_id={tid}", headers=h1)
+    check("チームの掲示板に出る", any(p["body"] == "チームだけの連絡" for p in r.json()), r.text)
+    r = requests.get(f"{BASE}/api/posts?team_id={tid}", headers=h_out)
+    check("部外者はチーム掲示板を見られない", r.status_code == 403, r.text)
+    r = requests.post(f"{BASE}/api/posts", headers=h_out, json={"body": "侵入", "team_id": tid})
+    check("部外者はチーム投稿できない", r.status_code == 403, r.text)
+
+    # チーム限定のイベント
+    r = requests.post(f"{BASE}/api/events", headers=h1,
+                      json={"title": "チーム定例", "date": "2026-07-01", "team_id": tid})
+    check("チームイベント作成", r.status_code == 201, r.text)
+    r = requests.get(f"{BASE}/api/events?month=2026-07", headers=h0)
+    check("サイト全体のカレンダーには出ない", all(e["title"] != "チーム定例" for e in r.json()), r.text)
+    r = requests.get(f"{BASE}/api/events?month=2026-07&team_id={tid}", headers=h0)
+    check("チームのカレンダーに出る", any(e["title"] == "チーム定例" for e in r.json()), r.text)
+
+    # チーム統計
+    r = requests.get(f"{BASE}/api/teams/{tid}/stats", headers=h0)
+    check("チーム統計", r.status_code == 200 and r.json()["members"] == 2, r.text)
+
+    # リーダーの解除/設定(管理者のみ) と メンバー削除
+    uid1 = m1["user_id"]
+    r = requests.put(f"{BASE}/api/admin/teams/{tid}/members/{uid1}", headers=h0, json={"is_leader": True})
+    check("リーダー設定は管理者のみ", r.status_code == 403, r.text)
+    r = requests.put(f"{BASE}/api/admin/teams/{tid}/members/{uid1}", headers=admin_headers, json={"is_leader": True})
+    check("管理者がリーダー設定", r.status_code == 200, r.text)
+    r = requests.delete(f"{BASE}/api/teams/{tid}/members/{uid1}", headers=h0)
+    check("リーダーはリーダーを外せない", r.status_code == 403, r.text)
+    r = requests.delete(f"{BASE}/api/teams/{tid}/members/{uid1}", headers=admin_headers)
+    check("管理者はリーダーも外せる", r.status_code == 200, r.text)
+
+    # チーム削除でチーム限定データも消える
+    r = requests.delete(f"{BASE}/api/admin/teams/{tid}", headers=admin_headers)
+    check("チーム削除", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/teams", headers=h0)
+    check("削除後は一覧から消える", all(t["id"] != tid for t in r.json()), r.text)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -496,6 +587,7 @@ async def main():
     admin_headers = test_admin(users)
     test_multitenant(users, admin_headers)
     await test_phase2_settings(users, admin_headers)
+    test_teams(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)

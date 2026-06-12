@@ -409,6 +409,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .setting-group .checkbox-label { margin-bottom: 8px; font-size: 0.88rem; }
 .setting-group .checkbox-label:last-child { margin-bottom: 0; }
 
+/* チーム */
+.scope-select {
+  float: right; font-size: 0.78rem; padding: 3px 6px;
+  border: 1.5px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-family: inherit; max-width: 45%;
+}
+.team-detail-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px; margin: 12px 0 8px; padding-top: 10px;
+  border-top: 1.5px solid var(--border);
+}
+#team-list .role-tag, #team-member-list .role-tag,
+#admin-team-list .role-tag, #admin-team-members .role-tag {
+  font-size: 0.65rem; padding: 1px 8px; margin-left: 6px;
+}
+
 @media (max-width: 560px) {
   .card { padding: 22px 18px; }
   main { margin-top: 14px; }
