@@ -492,6 +492,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .room-card-actions .btn-text { font-size: 0.75rem; }
 
+/* ルーム詳細モーダル */
+.room-detail-list { list-style: none; margin-bottom: 14px; }
+.room-detail-list li {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 0.92rem;
+}
+.room-detail-list li:last-child { border-bottom: none; }
+.room-detail-list span { color: var(--muted); font-size: 0.82rem; white-space: nowrap; }
+.room-detail-list strong { text-align: right; }
+
 /* CSV一括登録 */
 .csv-box { margin-bottom: 12px; font-size: 0.85rem; }
 .csv-box summary { cursor: pointer; color: var(--primary); font-weight: 600; }

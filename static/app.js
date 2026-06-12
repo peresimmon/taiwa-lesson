@@ -1823,7 +1823,7 @@ async function loadRooms() {
               ${r.participants}${r.capacity ? "/" + r.capacity : ""}人参加中 ・ ${r.session_minutes}分
               ${r.role_matching ? " ・ 話し手×聞き手" : ""}
             </div>
-            <div class="room-card-join">タップして参加 →</div>
+            <div class="room-card-join">詳細を見る →</div>
             ${r.can_manage ? `<div class="room-card-actions">
               <button class="btn-text" data-redit="${r.id}">編集</button>
               <button class="btn-text danger" data-rdelete="${r.id}" data-name="${escapeHtml(r.name)}">削除</button>
@@ -1835,9 +1835,10 @@ async function loadRooms() {
 
   $("room-list").querySelectorAll(".room-card").forEach((card) => {
     card.onclick = (e) => {
-      // 編集・削除ボタンのクリックでは参加しない
+      // 編集・削除ボタンのクリックでは開かない
       if (e.target.closest("[data-redit],[data-rdelete]")) return;
-      joinRoom(parseInt(card.dataset.join, 10));
+      const room = myRooms.find((r) => r.id === parseInt(card.dataset.join, 10));
+      if (room) openRoomModal(room);
     };
   });
   $("room-list").querySelectorAll("[data-redit]").forEach((btn) => {
@@ -1856,18 +1857,48 @@ async function loadRooms() {
   });
 }
 
-async function joinRoom(roomId) {
-  $("room-error").textContent = "";
-  const room = myRooms.find((r) => r.id === roomId);
-  if (!room) return;
-  if (room.role_matching && !selectedRole) {
-    $("room-error").textContent = "上の「話し手」「聞き手」から役割を選んでから参加してください";
-    return;
-  }
+/* ルームの詳細モーダル。ここからマッチング待機へ進む */
+function openRoomModal(room) {
+  const modeNames = [
+    room.modes.toon ? "デフォルメ" : null,
+    room.modes.real ? "リアル" : null,
+    room.modes.still ? "静止画" : null,
+    room.modes.camera ? "実映像" : null,
+  ].filter(Boolean).join("・");
+  const body = `
+    <ul class="room-detail-list">
+      ${room.topic ? `<li><span>今日の話題</span><strong>💬 ${escapeHtml(room.topic)}</strong></li>` : ""}
+      <li><span>参加状況</span><strong>${room.participants}${room.capacity ? ` / ${room.capacity}` : ""}人</strong></li>
+      <li><span>セッション時間</span><strong>${room.session_minutes}分</strong></li>
+      <li><span>マッチング</span><strong>${room.role_matching ? "話し手×聞き手" : "役割なし"}</strong></li>
+      <li><span>表示モード</span><strong>${modeNames}</strong></li>
+      ${room.team_name ? `<li><span>参加できる人</span><strong>${escapeHtml(room.team_name)}のメンバー</strong></li>` : ""}
+      <li><span>作成者</span><strong>${escapeHtml(room.creator)}</strong></li>
+      ${room.expires_at ? `<li><span>有効期限</span><strong>${parseUTC(room.expires_at).toLocaleString("ja-JP")}</strong></li>` : ""}
+    </ul>
+    ${room.has_passphrase ? `<label>このルームには合言葉が必要です
+      <input type="text" id="room-pass-input" maxlength="100" placeholder="合言葉を入力" autocomplete="off">
+    </label>` : ""}
+    <p id="room-join-error" class="error"></p>`;
+  // 役割マッチングが有効なルームでは役割ごとの参加ボタンを出す
+  const actions = room.role_matching
+    ? [
+        { label: "🗣️ 話し手として参加", primary: true, onClick: () => startRoomMatching(room, "speaker") },
+        { label: "👂 聞き手として参加", primary: true, onClick: () => startRoomMatching(room, "listener") },
+      ]
+    : [{ label: "マッチング開始", primary: true, onClick: () => startRoomMatching(room, "any") }];
+  openModal(`ルーム: ${room.name}`, body, actions);
+}
+
+/* モーダルからマッチング待機状態へ移行する */
+async function startRoomMatching(room, role) {
   let passphrase = "";
   if (room.has_passphrase) {
-    passphrase = prompt(`ルーム「${room.name}」の合言葉を入力してください`) || "";
-    if (!passphrase) return;
+    passphrase = ($("room-pass-input") ? $("room-pass-input").value : "").trim();
+    if (!passphrase) {
+      $("room-join-error").textContent = "合言葉を入力してください";
+      return;
+    }
   }
   // ルームの有効設定(セッション時間・表示モード)を通話に適用する
   activeRoomConfig = {
@@ -1877,14 +1908,10 @@ async function joinRoom(roomId) {
   };
   try {
     if (!ws) await connectWS();
-    wsSend({
-      type: "join_queue",
-      role: room.role_matching ? selectedRole : "any",
-      room_id: roomId,
-      passphrase,
-    });
+    wsSend({ type: "join_queue", role, room_id: room.id, passphrase });
+    closeModal();
   } catch (err) {
-    $("room-error").textContent = err.message;
+    $("room-join-error").textContent = err.message;
   }
 }
 
@@ -2037,8 +2064,9 @@ function renderEventList() {
   $("event-list").querySelectorAll("[data-evroom]").forEach((btn) => {
     btn.onclick = () => {
       const rid = parseInt(btn.dataset.evroom, 10);
-      if (myRooms.some((r) => r.id === rid)) {
-        joinRoom(rid);
+      const room = myRooms.find((r) => r.id === rid);
+      if (room) {
+        openRoomModal(room);
       } else {
         $("lobby-error").textContent = "ルームが見つかりません(削除されたか、参加権限がありません)";
       }
