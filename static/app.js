@@ -2922,6 +2922,13 @@ $("sys-site-form").onsubmit = async (e) => {
   }
 };
 
+// ---- PWA(Service Worker登録) ---------------------------------------------------
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {
+    /* 登録できなくても通常のWebとして動作する */
+  });
+}
+
 // ---- 初期化 -----------------------------------------------------------------
 (async function init() {
   if (!token) {

@@ -78,7 +78,9 @@ async def cache_control(request, call_next):
     (ETagにより未変更なら304で済むため通信量はほぼ増えない)"""
     response = await call_next(request)
     path = request.url.path
-    if path in ("/", f"/{MAIN_SITE_SLUG}", "/login") or path.endswith((".html", ".js", ".css")):
+    if path in ("/", f"/{MAIN_SITE_SLUG}", "/login", "/manifest.json") or path.endswith(
+        (".html", ".js", ".css")
+    ):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
