@@ -22,6 +22,7 @@
     <div id="user-info" class="hidden">
       <span id="user-name"></span>
       <button id="btn-admin" class="btn-text hidden">管理画面</button>
+      <button id="btn-sysadmin" class="btn-text hidden">システム管理</button>
       <button id="btn-logout" class="btn-text">ログアウト</button>
     </div>
   </header>
@@ -34,6 +35,9 @@
         <button id="tab-register" class="tab">新規登録</button>
       </div>
       <form id="auth-form">
+        <label id="auth-site-label" class="hidden">サイトID
+          <input type="text" id="auth-site" minlength="2" maxlength="30" autocomplete="organization" placeholder="例: example-corp">
+        </label>
         <label>ユーザー名（匿名で表示されます）
           <input type="text" id="auth-username" required minlength="2" maxlength="50" autocomplete="username" placeholder="例: listener_taro">
         </label>
@@ -42,6 +46,22 @@
         </label>
         <button type="submit" id="auth-submit" class="btn-primary">ログイン</button>
         <p id="auth-error" class="error"></p>
+      </form>
+    </section>
+
+    <!-- 初回パスワード変更 -->
+    <section id="screen-password" class="screen card hidden">
+      <h2>パスワードの変更</h2>
+      <p class="note">初期パスワードのため、新しいパスワードへの変更が必要です。変更後にご利用いただけます。</p>
+      <form id="password-form">
+        <label>現在のパスワード
+          <input type="password" id="pw-current" required minlength="6" maxlength="128" autocomplete="current-password">
+        </label>
+        <label>新しいパスワード（6文字以上）
+          <input type="password" id="pw-new" required minlength="6" maxlength="128" autocomplete="new-password">
+        </label>
+        <button type="submit" class="btn-primary">変更してはじめる</button>
+        <p id="pw-error" class="error"></p>
       </form>
     </section>
 
@@ -222,6 +242,11 @@
       <div class="dash-grid">
         <div class="panel">
           <h3>ユーザー一覧</h3>
+          <form id="admin-user-form" class="inline-form">
+            <input type="text" id="new-user-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
+            <input type="text" id="new-user-pass" placeholder="初期パスワード" required minlength="6" maxlength="128">
+            <button type="submit" class="btn-small">ユーザー作成</button>
+          </form>
           <div class="admin-table-wrap">
             <table class="admin-table">
               <thead>
@@ -268,6 +293,63 @@
         </div>
       </div>
       <p id="admin-error" class="error"></p>
+    </section>
+
+    <!-- システム管理画面(システム管理者のみ) -->
+    <section id="screen-sysadmin" class="screen hidden">
+      <div class="panel admin-bar">
+        <h2>システム管理画面</h2>
+        <button id="btn-sysadmin-back" class="btn-secondary">ホームへ戻る</button>
+      </div>
+      <div class="dash-grid">
+        <div class="panel">
+          <h3>サイト一覧</h3>
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr><th>ID</th><th>サイトID</th><th>サイト名</th><th>種別</th><th>ユーザー</th><th></th></tr>
+              </thead>
+              <tbody id="sys-site-rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>サイト作成</h3>
+          <form id="sys-site-form">
+            <label>サイトID（半角小文字英数とハイフン）
+              <input type="text" id="site-slug" required minlength="2" maxlength="30" pattern="[a-z0-9][a-z0-9\-]{1,29}">
+            </label>
+            <label>サイト名
+              <input type="text" id="site-name" required maxlength="100">
+            </label>
+            <button type="submit" class="btn-small">サイトを作成</button>
+          </form>
+          <div id="sys-site-created" class="sys-created hidden"></div>
+        </div>
+
+        <div class="panel">
+          <h3>サイトのユーザー<span id="sys-users-site" class="admin-history-user"></span></h3>
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr><th>ID</th><th>ユーザー名</th><th>権限</th><th>回数</th></tr>
+              </thead>
+              <tbody id="sys-user-rows">
+                <tr><td colspan="4" class="empty-note">サイト一覧の「ユーザー」を押すと表示されます</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>サイトの設定<span id="sys-settings-site" class="admin-history-user"></span></h3>
+          <ul id="sys-settings-view" class="announcement-list">
+            <li class="empty-note">サイト一覧の「設定」を押すと表示されます</li>
+          </ul>
+        </div>
+      </div>
+      <p id="sysadmin-error" class="error"></p>
     </section>
   </main>
 

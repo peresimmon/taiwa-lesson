@@ -2,7 +2,17 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./videomatch.db")
@@ -20,13 +30,31 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(Base):
-    __tablename__ = "users"
+class Site(Base):
+    """テナント(サイト)。メインサイト+企業ごとのサブサイト"""
+
+    __tablename__ = "sites"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(30), unique=True, index=True)  # ログインで使うサイトID
+    name: Mapped[str] = mapped_column(String(100))
+    is_main: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+    # ユーザー名はサイト内で一意(別サイトには同名ユーザーが存在できる)
+    __table_args__ = (UniqueConstraint("site_id", "username", name="uq_users_site_username"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    username: Mapped[str] = mapped_column(String(50), index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(20), default="user")  # "user" | "admin"
+    # "system_admin" | "site_admin" | "moderator" | "user"
+    role: Mapped[str] = mapped_column(String(20), default="user")
+    # 初期パスワードのアカウントは初回ログイン時に変更を強制する
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -43,11 +71,12 @@ class Survey(Base):
 
 
 class Announcement(Base):
-    """運営からのお知らせ"""
+    """運営からのお知らせ(サイトごと)"""
 
     __tablename__ = "announcements"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
     title: Mapped[str] = mapped_column(String(200))
     body: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -77,28 +106,61 @@ class Post(Base):
 
 
 class Setting(Base):
-    """サイト全体の設定(キー・バリュー)"""
+    """サイトごとの設定(キー・バリュー)"""
 
     __tablename__ = "settings"
 
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), primary_key=True)
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(String(500))
 
 
 def _migrate() -> None:
-    """既存DBに後から追加したカラムを反映する簡易マイグレーション(SQLiteのみ)"""
+    """既存DBに後から追加したカラムを反映する簡易マイグレーション(SQLiteのみ)
+
+    既存DBではusersテーブルにusernameのグローバル一意制約が残るが、
+    デモ用途では制約が強い方向のずれなので許容する(新規DBは複合一意)。
+    """
     if not DATABASE_URL.startswith("sqlite"):
         return
+
+    def cols(conn, table):
+        return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
+
     with engine.connect() as conn:
-        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(users)"))]
-        if cols and "role" not in cols:
-            conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'"))
-            conn.commit()
+        user_cols = cols(conn, "users")
+        if user_cols:
+            if "role" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'"))
+            if "site_id" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN site_id INTEGER NOT NULL DEFAULT 0"))
+            if "must_change_password" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0"))
+            # 旧ロール名 "admin" は新体系のシステム管理者へ
+            conn.execute(text("UPDATE users SET role='system_admin' WHERE role='admin'"))
+            # 旧スキーマのグローバル一意インデックスを、サイト内一意に置き換える
+            conn.execute(text("DROP INDEX IF EXISTS ix_users_username"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_site_username"
+                    " ON users (site_id, username)"
+                )
+            )
+        ann_cols = cols(conn, "announcements")
+        if ann_cols and "site_id" not in ann_cols:
+            conn.execute(text("ALTER TABLE announcements ADD COLUMN site_id INTEGER NOT NULL DEFAULT 0"))
+        set_cols = cols(conn, "settings")
+        if set_cols and "site_id" not in set_cols:
+            # 旧スキーマ(キーのみ)は作り直す。設定はデフォルト値に戻る
+            conn.execute(text("DROP TABLE settings"))
+        conn.commit()
 
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate()
+    Base.metadata.create_all(bind=engine)  # 落としたテーブルを新スキーマで再作成
 
 
 def get_db():

@@ -242,6 +242,36 @@ def test_dashboard(users):
           and "waiting_speakers" in s and "waiting_listeners" in s, r.text)
 
 
+ADMIN_TEST_PW = "password123!"  # テスト中に一時的に使う管理者パスワード
+
+
+def admin_login():
+    """administratorでログインする。初期パスワードなら強制変更フローを通す"""
+    r = requests.post(f"{BASE}/api/login", json={"username": "administrator", "password": "password"})
+    if r.status_code == 401:
+        # 既に変更済み(同一プロセスでの再実行)
+        return requests.post(f"{BASE}/api/login",
+                             json={"username": "administrator", "password": ADMIN_TEST_PW})
+    data = r.json()
+    if data.get("must_change_password"):
+        # 変更が済むまで他のAPIは403になる
+        h = {"Authorization": f"Bearer {data['token']}"}
+        blocked = requests.get(f"{BASE}/api/stats", headers=h)
+        check("変更前は他APIが403", blocked.status_code == 403, blocked.text)
+        rc = requests.post(f"{BASE}/api/password", headers=h,
+                           json={"current_password": "password", "new_password": ADMIN_TEST_PW})
+        check("初回パスワード変更", rc.status_code == 200, rc.text)
+        r = requests.post(f"{BASE}/api/login",
+                          json={"username": "administrator", "password": ADMIN_TEST_PW})
+    return r
+
+
+def restore_admin_password(headers):
+    """ローカルDBを administrator/password に戻しておく(次回起動時に再び変更強制になる)"""
+    requests.post(f"{BASE}/api/password", headers=headers,
+                  json={"current_password": ADMIN_TEST_PW, "new_password": "password"})
+
+
 def test_admin(users):
     print("[8] 管理者API")
     user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -250,9 +280,9 @@ def test_admin(users):
     r = requests.get(f"{BASE}/api/admin/users", headers=user_headers)
     check("一般ユーザーは403", r.status_code == 403, r.text)
 
-    # 起動時にシードされた管理者でログイン
-    r = requests.post(f"{BASE}/api/login", json={"username": "administrator", "password": "password"})
-    check("administratorでログイン", r.status_code == 200 and r.json().get("role") == "admin", r.text)
+    # 起動時にシードされた管理者でログイン(初回はパスワード変更を強制される)
+    r = admin_login()
+    check("administratorでログイン", r.status_code == 200 and r.json().get("role") == "system_admin", r.text)
     headers = {"Authorization": f"Bearer {r.json()['token']}"}
 
     # ユーザー一覧
@@ -295,7 +325,7 @@ def test_admin(users):
     check("お知らせ削除", r.status_code == 200, r.text)
 
     # ユーザー削除(管理者は削除不可)
-    admin_row = next(u for u in rows if u["role"] == "admin")
+    admin_row = next(u for u in rows if u["role"] == "system_admin")
     r = requests.delete(f"{BASE}/api/admin/users/{admin_row['id']}", headers=headers)
     check("管理者は削除できない", r.status_code == 400, r.text)
     suffix = secrets.token_hex(4)
@@ -307,6 +337,96 @@ def test_admin(users):
     check("一般ユーザーを削除できる", r.status_code == 200, r.text)
     r = requests.get(f"{BASE}/api/me", headers={"Authorization": f"Bearer {vid_token}"})
     check("削除済みユーザーのトークンは無効", r.status_code == 401, r.text)
+    return headers
+
+
+def test_multitenant(users, admin_headers):
+    print("[9] マルチテナント(サイト分離)")
+    slug = f"corp-{secrets.token_hex(3)}"
+
+    # 一般ユーザーはシステム管理APIにアクセスできない
+    r = requests.get(f"{BASE}/api/sysadmin/sites",
+                     headers={"Authorization": f"Bearer {users[0]['token']}"})
+    check("一般ユーザーはsysadmin不可", r.status_code == 403, r.text)
+
+    # サイト作成 → サイト管理者が自動生成される
+    r = requests.post(f"{BASE}/api/sysadmin/sites", headers=admin_headers,
+                      json={"slug": slug, "name": "テスト株式会社"})
+    check("サイト作成", r.status_code == 201, r.text)
+    created = r.json()
+    check("サイト管理者が自動生成される",
+          created["admin_username"] == f"{slug}_admin"
+          and created["initial_password"] == f"password@{slug}", created)
+    site_id = created["id"]
+    r = requests.post(f"{BASE}/api/sysadmin/sites", headers=admin_headers,
+                      json={"slug": slug, "name": "重複"})
+    check("サイトID重複は409", r.status_code == 409, r.text)
+
+    # サイト管理者ログイン: サイトID無し(メインサイト)では入れない
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"{slug}_admin", "password": f"password@{slug}"})
+    check("サイトID無しではログイン不可", r.status_code == 401, r.text)
+    # サイトID付きでログイン → 初回パスワード変更を強制される
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"{slug}_admin", "password": f"password@{slug}", "site": slug})
+    check("サイトID付きでログイン", r.status_code == 200 and r.json()["must_change_password"], r.text)
+    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    r = requests.post(f"{BASE}/api/password", headers=h,
+                      json={"current_password": f"password@{slug}", "new_password": "newpass123"})
+    check("サイト管理者のパスワード変更", r.status_code == 200, r.text)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"{slug}_admin", "password": "newpass123", "site": slug})
+    check("変更後ログイン", r.status_code == 200 and r.json()["role"] == "site_admin"
+          and not r.json()["must_change_password"], r.text)
+    sub_headers = {"Authorization": f"Bearer {r.json()['token']}"}
+
+    # サイト分離: サブサイトのユーザー一覧にメインサイトのユーザーは出ない
+    r = requests.get(f"{BASE}/api/admin/users", headers=sub_headers)
+    names = [u["username"] for u in r.json()]
+    check("ユーザー一覧がサイト内に限定される",
+          f"{slug}_admin" in names and users[0]["username"] not in names, names)
+
+    # サイト管理者がユーザーを作成 → サイトID付きでのみログイン可
+    r = requests.post(f"{BASE}/api/admin/users", headers=sub_headers,
+                      json={"username": "member1", "password": "member123"})
+    check("サイト管理者がユーザー作成", r.status_code == 201, r.text)
+    r = requests.post(f"{BASE}/api/login", json={"username": "member1", "password": "member123"})
+    check("作成ユーザーはメインサイトに入れない", r.status_code == 401, r.text)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": "member1", "password": "member123", "site": slug})
+    check("作成ユーザーはサブサイトに入れる(要パスワード変更)",
+          r.status_code == 200 and r.json()["must_change_password"], r.text)
+
+    # 同名ユーザーがサイトごとに共存できる
+    r = requests.post(f"{BASE}/api/register", json={"username": "member1", "password": "other123"})
+    check("同名ユーザーを別サイト(メイン)に登録できる", r.status_code == 201, r.text)
+
+    # 統計・設定の分離
+    r = requests.get(f"{BASE}/api/stats", headers=sub_headers)
+    check("統計がサイト内のみ", r.json()["total_users"] == 2, r.text)  # 管理者+member1
+    r = requests.put(f"{BASE}/api/admin/settings", headers=sub_headers,
+                     json={"session_minutes": 15, "allow_registration": False})
+    check("サブサイトの設定変更", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/config",
+                     headers={"Authorization": f"Bearer {users[0]['token']}"})
+    check("メインサイトの設定には影響しない", r.json()["session_minutes"] != 15, r.text)
+
+    # システム管理者は各サイトのユーザー・設定を確認できる
+    r = requests.get(f"{BASE}/api/sysadmin/sites/{site_id}/users", headers=admin_headers)
+    check("sysadmin: サイトのユーザー確認", r.status_code == 200 and len(r.json()) == 2, r.text)
+    r = requests.get(f"{BASE}/api/sysadmin/sites/{site_id}/settings", headers=admin_headers)
+    check("sysadmin: サイトの設定確認", r.status_code == 200 and r.json()["session_minutes"] == 15, r.text)
+
+    # サイト削除 → 所属ユーザーもログイン不可に
+    sites = requests.get(f"{BASE}/api/sysadmin/sites", headers=admin_headers).json()
+    main_site = next(s for s in sites if s["is_main"])
+    r = requests.delete(f"{BASE}/api/sysadmin/sites/{main_site['id']}", headers=admin_headers)
+    check("メインサイトは削除できない", r.status_code == 400, r.text)
+    r = requests.delete(f"{BASE}/api/sysadmin/sites/{site_id}", headers=admin_headers)
+    check("サイト削除", r.status_code == 200, r.text)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"{slug}_admin", "password": "newpass123", "site": slug})
+    check("削除後はログイン不可", r.status_code == 401, r.text)
 
 
 async def main():
@@ -317,7 +437,9 @@ async def main():
     await test_decline_flow(users)
     await test_disconnect_during_wait(users)
     test_dashboard(users)
-    test_admin(users)
+    admin_headers = test_admin(users)
+    test_multitenant(users, admin_headers)
+    restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 

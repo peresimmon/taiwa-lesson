@@ -39,9 +39,10 @@ NICKNAMES = [
 
 
 class Client:
-    def __init__(self, user_id: int, username: str, ws: WebSocket):
+    def __init__(self, user_id: int, username: str, site_id: int, ws: WebSocket):
         self.user_id = user_id
         self.username = username
+        self.site_id = site_id            # マッチングは同一サイト内でのみ行う
         self.ws = ws
         self.room: "Room | None" = None
         self.role: str | None = None      # 待機〜セッション中の役割
@@ -71,14 +72,21 @@ class Room:
 class MatchingManager:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
-        self.waiting: dict[str, list[Client]] = {ROLE_SPEAKER: [], ROLE_LISTENER: []}
+        # (site_id, role) -> 待機中クライアント。サイトをまたいだマッチングはしない
+        self.waiting: dict[tuple[int, str], list[Client]] = {}
         self.clients: dict[int, Client] = {}
 
-    def waiting_counts(self) -> dict[str, int]:
+    def _queue(self, site_id: int, role: str) -> list[Client]:
+        return self.waiting.setdefault((site_id, role), [])
+
+    def waiting_counts(self, site_id: int) -> dict[str, int]:
         return {
-            "speakers": len(self.waiting[ROLE_SPEAKER]),
-            "listeners": len(self.waiting[ROLE_LISTENER]),
+            "speakers": len(self._queue(site_id, ROLE_SPEAKER)),
+            "listeners": len(self._queue(site_id, ROLE_LISTENER)),
         }
+
+    def online_count(self, site_id: int) -> int:
+        return sum(1 for c in self.clients.values() if c.site_id == site_id)
 
     def _in_queue(self, client: Client) -> bool:
         return any(client in queue for queue in self.waiting.values())
@@ -114,14 +122,15 @@ class MatchingManager:
             if client.room is not None or self._in_queue(client):
                 return
             client.role = role
-            # 反対の役割で待っている人がいれば即マッチ。いなければ待機列へ
+            # 同一サイト内で反対の役割で待っている人がいれば即マッチ。いなければ待機列へ
             opposite = ROLE_LISTENER if role == ROLE_SPEAKER else ROLE_SPEAKER
-            if self.waiting[opposite]:
-                partner = random.choice(self.waiting[opposite])
-                self.waiting[opposite].remove(partner)
+            opposite_queue = self._queue(client.site_id, opposite)
+            if opposite_queue:
+                partner = random.choice(opposite_queue)
+                opposite_queue.remove(partner)
                 await self._create_room(client, partner)
             else:
-                self.waiting[role].append(client)
+                self._queue(client.site_id, role).append(client)
                 await client.send({"type": "queued", "role": role})
 
     async def _create_room(self, a: Client, b: Client) -> None:

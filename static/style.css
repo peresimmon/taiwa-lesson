@@ -390,6 +390,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 8px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 0.95rem;
   font-family: inherit; background: var(--bg); }
 #admin-error { margin-top: 14px; }
+#sysadmin-error { margin-top: 14px; }
+
+.sys-created {
+  margin-top: 14px; padding: 14px 16px; border-radius: 12px;
+  background: var(--warm); border: 1.5px solid var(--warm-dark);
+  font-size: 0.9rem; line-height: 1.9;
+}
+.sys-created small { color: var(--muted); }
+
+#admin-user-form { margin-bottom: 12px; }
 
 @media (max-width: 560px) {
   .card { padding: 22px 18px; }
