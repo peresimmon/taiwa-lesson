@@ -1695,93 +1695,201 @@ function renderTeamPanel() {
             <span>${escapeHtml(t.name)}</span>
             ${t.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
             <span class="e-user">${t.members}人
-              <button class="btn-text" data-team="${t.id}" data-name="${escapeHtml(t.name)}" data-leader="${t.is_leader}">メンバー</button>
+              <button class="btn-text" data-team="${t.id}">開く</button>
             </span>
           </li>`
         )
         .join("")
     : '<li class="empty-note">所属チームはありません</li>';
   $("team-list").querySelectorAll("[data-team]").forEach((btn) => {
-    btn.onclick = () => showTeamMembers(btn.dataset.team, btn.dataset.name, btn.dataset.leader === "true");
+    btn.onclick = () => showTeamScreen(parseInt(btn.dataset.team, 10));
   });
 }
 
-async function showTeamMembers(teamId, name, isLeader) {
-  $("team-error").textContent = "";
+// ---- チーム画面(メンバー・リーダー用。管理画面に入れないリーダーの導線) -----------
+let teamScreen = null; // 表示中のチーム詳細
+
+async function showTeamScreen(teamId) {
+  $("team-screen-error").textContent = "";
+  $("team-edit-msg").textContent = "";
+  showScreen("team");
   try {
-    const [data, stats] = await Promise.all([
-      api(`/api/teams/${teamId}/members`),
-      api(`/api/teams/${teamId}/stats`),
-    ]);
-    currentTeamId = teamId;
-    currentTeamLeader = isLeader;
-    $("team-detail").classList.remove("hidden");
-    $("team-detail-name").textContent = name;
-    $("team-detail-stats").textContent = `メンバー${stats.members}人 / セッション${stats.sessions}回`;
-    $("team-invite-form").classList.toggle("hidden", !isLeader);
-    $("team-member-list").innerHTML = data.members
-      .map(
-        (m) => `<li>
-          <span>${escapeHtml(m.username)}</span>
-          ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
-          ${isLeader && !m.is_leader ? `<span class="h-date">
-            <button class="btn-text" data-warnmember="${m.user_id}" data-name="${escapeHtml(m.username)}">警告</button>
-            <button class="btn-text danger" data-remove="${m.user_id}">削除</button></span>` : ""}
-        </li>`
-      )
-      .join("");
-    $("team-member-list").querySelectorAll("[data-remove]").forEach((btn) => {
-      btn.onclick = async () => {
-        try {
-          await api(`/api/teams/${teamId}/members/${btn.dataset.remove}`, "DELETE");
-          await loadTeams();
-          await showTeamMembers(teamId, name, isLeader);
-        } catch (err) {
-          $("team-error").textContent = err.message;
-        }
-      };
-    });
-    $("team-member-list").querySelectorAll("[data-warnmember]").forEach((btn) => {
-      btn.onclick = () => issueWarning(parseInt(btn.dataset.warnmember, 10), btn.dataset.name);
-    });
-    // チームリーダーには、自チームのメンバーが対象の通報を表示する
-    if (isLeader) {
-      try {
-        const reports = await api(`/api/reports?team_id=${teamId}`);
-        if (reports.length) {
-          $("team-member-list").insertAdjacentHTML(
-            "beforeend",
-            `<li class="team-reports-head"><strong>このチームへの通報</strong></li>` +
-              reports
-                .map(
-                  (r) => `<li>
-                    <span>${escapeHtml(r.reported)}: ${escapeHtml(r.reason)}</span>
-                    <span class="h-date">${parseUTC(r.created_at).toLocaleDateString("ja-JP")} ${r.status === "open" ? "未対応" : "対応済み"}</span>
-                  </li>`
-                )
-                .join("")
-          );
-        }
-      } catch { /* リーダー以外には出さない */ }
-    }
+    const d = await api(`/api/teams/${teamId}`);
+    teamScreen = d;
+    $("team-screen-name").textContent = d.name;
+    $("team-screen-desc").textContent = d.description || "（チームの説明はまだありません）";
+    $("team-screen-stats").innerHTML = `
+      <div class="stat"><span>${d.stats.members}</span><small>メンバー</small></div>
+      <div class="stat"><span>${d.stats.sessions}</span><small>セッション</small></div>`;
+    // リーダー(またはサイト管理者)だけが設定変更・招待・メンバー操作できる
+    $("team-edit-form").classList.toggle("hidden", !d.is_leader);
+    $("team-screen-invite").classList.toggle("hidden", !d.is_leader);
+    $("team-edit-name").value = d.name;
+    $("team-edit-desc").value = d.description;
+    renderTeamScreenMembers();
+    await Promise.all([loadTeamScreenPosts(), loadTeamScreenEvents(), loadTeamScreenReports()]);
   } catch (err) {
-    $("team-error").textContent = err.message;
+    $("team-screen-error").textContent = err.message;
   }
 }
 
-$("team-invite-form").onsubmit = async (e) => {
-  e.preventDefault();
-  $("team-error").textContent = "";
+function renderTeamScreenMembers() {
+  const d = teamScreen;
+  $("team-screen-members").innerHTML = d.members
+    .map((m) => {
+      const isMe = m.user_id === d.my_user_id;
+      const actions = [];
+      if (d.is_leader && !isMe) {
+        // リーダーは共同リーダーを複数人任命できる
+        actions.push(
+          `<button class="btn-text" data-lead="${m.user_id}" data-flag="${!m.is_leader}">${m.is_leader ? "リーダー解除" : "リーダーにする"}</button>`
+        );
+        if (!m.is_leader) {
+          actions.push(`<button class="btn-text" data-warnmember="${m.user_id}" data-name="${escapeHtml(m.username)}">警告</button>`);
+          actions.push(`<button class="btn-text danger" data-remove="${m.user_id}">削除</button>`);
+        }
+      }
+      return `<li>
+        <span>${escapeHtml(m.username)}${isMe ? " <small>(あなた)</small>" : ""}</span>
+        ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
+        ${actions.length ? `<span class="h-date">${actions.join(" ")}</span>` : ""}
+      </li>`;
+    })
+    .join("");
+
+  $("team-screen-members").querySelectorAll("[data-lead]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/teams/${teamScreen.id}/members/${btn.dataset.lead}/leader`, "PUT", {
+          is_leader: btn.dataset.flag === "true",
+        });
+        await showTeamScreen(teamScreen.id);
+        await loadTeams();
+      } catch (err) {
+        $("team-screen-error").textContent = err.message;
+      }
+    };
+  });
+  $("team-screen-members").querySelectorAll("[data-remove]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/teams/${teamScreen.id}/members/${btn.dataset.remove}`, "DELETE");
+        await showTeamScreen(teamScreen.id);
+        await loadTeams();
+      } catch (err) {
+        $("team-screen-error").textContent = err.message;
+      }
+    };
+  });
+  $("team-screen-members").querySelectorAll("[data-warnmember]").forEach((btn) => {
+    btn.onclick = () => issueWarning(parseInt(btn.dataset.warnmember, 10), btn.dataset.name);
+  });
+}
+
+async function loadTeamScreenPosts() {
+  const posts = await api(`/api/posts?team_id=${teamScreen.id}`);
+  $("team-post-list").innerHTML = posts.length
+    ? posts
+        .map(
+          (p) => `<li>
+            <div class="p-meta"><strong>${escapeHtml(p.username)}</strong>
+              ${parseUTC(p.created_at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+            <div class="p-body">${escapeHtml(p.body)}</div>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">まだ投稿がありません</li>';
+}
+
+async function loadTeamScreenEvents() {
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const events = await api(`/api/events?month=${month}&team_id=${teamScreen.id}`);
+  $("team-event-list").innerHTML = events.length
+    ? events
+        .map(
+          (e) => `<li>
+            <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}</span>
+            <span>${escapeHtml(e.title)}</span>
+            <span class="e-user">by ${escapeHtml(e.username)}</span>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">今月のチーム予定はありません</li>';
+}
+
+async function loadTeamScreenReports() {
+  $("team-screen-reports").classList.add("hidden");
+  if (!teamScreen.is_leader) return;
   try {
-    await api(`/api/teams/${currentTeamId}/members`, "POST", {
-      username: $("team-invite-name").value.trim(),
+    const reports = await api(`/api/reports?team_id=${teamScreen.id}`);
+    if (!reports.length) return;
+    $("team-screen-reports").classList.remove("hidden");
+    $("team-screen-report-list").innerHTML = reports
+      .map(
+        (r) => `<li>
+          <div class="a-title">${escapeHtml(r.reported)} <span class="audit-user">通報者: ${escapeHtml(r.reporter)}</span></div>
+          <div class="a-body">${escapeHtml(r.reason)}</div>
+          <div class="a-date">${parseUTC(r.created_at).toLocaleString("ja-JP")} ${r.status === "open" ? "未対応" : "対応済み"}</div>
+        </li>`
+      )
+      .join("");
+  } catch { /* リーダー以外には出さない */ }
+}
+
+$("btn-team-back").onclick = () => showLobby();
+
+$("team-edit-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("team-edit-msg").textContent = "";
+  try {
+    await api(`/api/teams/${teamScreen.id}`, "PUT", {
+      name: $("team-edit-name").value.trim(),
+      description: $("team-edit-desc").value.trim(),
     });
-    $("team-invite-name").value = "";
+    $("team-edit-msg").textContent = "保存しました";
+    await showTeamScreen(teamScreen.id);
     await loadTeams();
-    const t = myTeams.find((x) => String(x.id) === String(currentTeamId));
-    if (t) await showTeamMembers(t.id, t.name, t.is_leader);
   } catch (err) {
-    $("team-error").textContent = err.message;
+    $("team-edit-msg").textContent = err.message;
+  }
+};
+
+$("team-screen-invite").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api(`/api/teams/${teamScreen.id}/members`, "POST", {
+      username: $("team-screen-invite-name").value.trim(),
+    });
+    $("team-screen-invite-name").value = "";
+    await showTeamScreen(teamScreen.id);
+    await loadTeams();
+  } catch (err) {
+    $("team-screen-error").textContent = err.message;
+  }
+};
+
+$("team-post-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const body = $("team-post-body").value.trim();
+  if (!body) return;
+  try {
+    await api("/api/posts", "POST", { body, team_id: teamScreen.id });
+    $("team-post-body").value = "";
+    await loadTeamScreenPosts();
+  } catch (err) {
+    $("team-screen-error").textContent = err.message;
+  }
+};
+
+$("btn-team-leave").onclick = async () => {
+  if (!confirm(`チーム「${teamScreen.name}」から脱退します。よろしいですか？`)) return;
+  try {
+    await api(`/api/teams/${teamScreen.id}/members/${teamScreen.my_user_id}`, "DELETE");
+    await loadTeams();
+    showLobby();
+  } catch (err) {
+    $("team-screen-error").textContent = err.message;
   }
 };
 
@@ -3130,6 +3238,85 @@ $("sys-site-form").onsubmit = async (e) => {
     await loadSysSites();
   } catch (err) {
     $("sysadmin-error").textContent = err.message;
+  }
+};
+
+// ---- マイページ(右上のユーザー名から) ---------------------------------------------
+$("user-name").onclick = () => showProfile();
+$("btn-profile-back").onclick = () => showLobby();
+
+async function showProfile() {
+  $("profile-error").textContent = "";
+  $("email-msg").textContent = "";
+  $("ppw-msg").textContent = "";
+  showScreen("profile");
+  try {
+    const [me, history, teams] = await Promise.all([
+      api("/api/me"),
+      api("/api/surveys/mine"),
+      api("/api/teams"),
+    ]);
+    $("profile-info").innerHTML = `
+      <li><span>ユーザー名</span><strong>${escapeHtml(me.username)}</strong></li>
+      <li><span>権限</span><strong>${roleLabels[me.role] || me.role}</strong></li>
+      <li><span>サイト</span><strong>${escapeHtml(me.site_name)}</strong></li>
+      <li><span>登録日</span><strong>${parseUTC(me.created_at).toLocaleDateString("ja-JP")}</strong></li>
+      <li><span>セッション回数</span><strong>${history.length}回</strong></li>`;
+    $("profile-email").value = me.email;
+    $("profile-history").innerHTML = history.length
+      ? history
+          .map(
+            (s) => `<li>
+              <span class="h-stars">${"★".repeat(s.rating)}${"☆".repeat(5 - s.rating)}</span>
+              <span class="h-comment">${escapeHtml(s.comment) || "(コメントなし)"}</span>
+              <span class="h-date">${parseUTC(s.created_at).toLocaleDateString("ja-JP")}</span>
+            </li>`
+          )
+          .join("")
+      : '<li class="empty-note">まだセッション履歴がありません</li>';
+    $("profile-teams").innerHTML = teams.length
+      ? teams
+          .map(
+            (t) => `<li>
+              <span>${escapeHtml(t.name)}</span>
+              ${t.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
+              <span class="e-user">${t.members}人 <button class="btn-text" data-pteam="${t.id}">開く</button></span>
+            </li>`
+          )
+          .join("")
+      : '<li class="empty-note">所属チームはありません</li>';
+    $("profile-teams").querySelectorAll("[data-pteam]").forEach((btn) => {
+      btn.onclick = () => showTeamScreen(parseInt(btn.dataset.pteam, 10));
+    });
+  } catch (err) {
+    $("profile-error").textContent = err.message;
+  }
+}
+
+$("email-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("email-msg").textContent = "";
+  try {
+    const r = await api("/api/me", "PUT", { email: $("profile-email").value.trim() || null });
+    $("email-msg").textContent = r.email ? "保存しました" : "メールアドレスを削除しました";
+  } catch (err) {
+    $("email-msg").textContent = err.message;
+  }
+};
+
+$("profile-pw-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("ppw-msg").textContent = "";
+  try {
+    await api("/api/password", "POST", {
+      current_password: $("ppw-current").value,
+      new_password: $("ppw-new").value,
+    });
+    $("ppw-current").value = "";
+    $("ppw-new").value = "";
+    $("ppw-msg").textContent = "パスワードを変更しました";
+  } catch (err) {
+    $("ppw-msg").textContent = err.message;
   }
 };
 

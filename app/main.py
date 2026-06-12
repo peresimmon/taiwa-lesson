@@ -335,6 +335,11 @@ class PostIn(BaseModel):
 
 class TeamIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+
+
+class EmailIn(BaseModel):
+    email: str | None = Field(default=None, max_length=120)
 
 
 class TeamMemberIn(BaseModel):
@@ -525,10 +530,24 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "id": user.id,
         "username": user.username,
         "role": user.role,
+        "email": user.email or "",
+        "created_at": user.created_at.isoformat(),
         "site": site.slug if site else "",
         "site_name": site.name if site else "",
         "must_change_password": user.must_change_password,
     }
+
+
+@app.put("/api/me")
+def update_me(
+    body: EmailIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """自分の設定変更(メールアドレス)"""
+    user.email = (body.email or "").strip() or None
+    db.commit()
+    return {"ok": True, "email": user.email or ""}
 
 
 @app.get("/api/config")
@@ -895,6 +914,7 @@ def my_teams(user: User = Depends(active_user), db: Session = Depends(get_db)):
         {
             "id": t.id,
             "name": t.name,
+            "description": t.description,
             "is_leader": m.is_leader,
             "members": counts.get(t.id, 0),
         }
@@ -923,6 +943,78 @@ def team_members(
             for m, name in rows
         ],
     }
+
+
+@app.get("/api/teams/{team_id}")
+def team_detail(
+    team_id: int,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """チーム画面用の詳細(メンバー・統計込み)。メンバーとサイト管理者のみ"""
+    team = _require_team_member(db, user, team_id)
+    rows = (
+        db.query(TeamMember, User.username)
+        .join(User, TeamMember.user_id == User.id)
+        .filter(TeamMember.team_id == team_id)
+        .order_by(TeamMember.id)
+        .all()
+    )
+    member_ids = [m.user_id for m, _ in rows]
+    sessions = (
+        db.query(Survey).filter(Survey.user_id.in_(member_ids)).count() if member_ids else 0
+    )
+    my_membership = _membership(db, team_id, user.id)
+    return {
+        "id": team.id,
+        "name": team.name,
+        "description": team.description,
+        "is_leader": bool(my_membership and my_membership.is_leader) or _is_site_admin(user),
+        "my_user_id": user.id,
+        "members": [
+            {"user_id": m.user_id, "username": name, "is_leader": m.is_leader}
+            for m, name in rows
+        ],
+        "stats": {"members": len(member_ids), "sessions": sessions},
+    }
+
+
+@app.put("/api/teams/{team_id}")
+def team_update(
+    team_id: int,
+    body: TeamIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """チーム設定(名前・説明)の変更。チームリーダーとサイト管理者のみ"""
+    team = _require_team_leader(db, user, team_id)
+    team.name = body.name
+    team.description = body.description.strip()
+    audit(db, user, "team_update", body.name)
+    db.commit()
+    return {"ok": True}
+
+
+@app.put("/api/teams/{team_id}/members/{user_id}/leader")
+def team_set_leader(
+    team_id: int,
+    user_id: int,
+    body: LeaderIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """リーダーの任命/解除。リーダーは他メンバーを共同リーダーにできる(複数人可)。
+    自分自身のリーダー権限はサイト管理者のみ変更できる"""
+    _require_team_leader(db, user, team_id)
+    if user_id == user.id and not _is_site_admin(user):
+        raise HTTPException(status_code=400, detail="自分のリーダー権限は変更できません")
+    m = _membership(db, team_id, user_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="チームのメンバーではありません")
+    m.is_leader = body.is_leader
+    audit(db, user, "team_leader_set", f"user_id={user_id} → {body.is_leader}")
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/teams/{team_id}/members", status_code=201)
@@ -957,6 +1049,30 @@ def team_remove_member(
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
+    """メンバーの削除。自分自身なら誰でも脱退できる(最後のリーダーを除く)"""
+    if user_id == user.id:
+        # 脱退(セルフ削除)
+        _team_or_404(db, user, team_id)
+        m = _membership(db, team_id, user.id)
+        if m is None:
+            raise HTTPException(status_code=404, detail="チームのメンバーではありません")
+        if m.is_leader:
+            others = (
+                db.query(TeamMember)
+                .filter(
+                    TeamMember.team_id == team_id,
+                    TeamMember.is_leader.is_(True),
+                    TeamMember.user_id != user.id,
+                )
+                .count()
+            )
+            if others == 0:
+                raise HTTPException(
+                    status_code=400, detail="他のリーダーを任命してから脱退してください"
+                )
+        db.delete(m)
+        db.commit()
+        return {"ok": True}
     _require_team_leader(db, user, team_id)
     m = _membership(db, team_id, user_id)
     if m is None:
@@ -1860,7 +1976,7 @@ def admin_create_team(
     admin: User = Depends(site_admin_user),
     db: Session = Depends(get_db),
 ):
-    team = Team(site_id=admin.site_id, name=body.name)
+    team = Team(site_id=admin.site_id, name=body.name, description=body.description.strip())
     db.add(team)
     audit(db, admin, "team_create", body.name)
     db.commit()

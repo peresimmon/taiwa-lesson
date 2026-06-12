@@ -119,6 +119,7 @@ class Team(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(String(500), default="")  # チームの説明
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -301,6 +302,9 @@ def _migrate() -> None:
         rm_cols = cols(conn, "rooms")
         if rm_cols and "topic" not in rm_cols:
             conn.execute(text("ALTER TABLE rooms ADD COLUMN topic VARCHAR(200) NOT NULL DEFAULT ''"))
+        tm_cols = cols(conn, "teams")
+        if tm_cols and "description" not in tm_cols:
+            conn.execute(text("ALTER TABLE teams ADD COLUMN description VARCHAR(500) NOT NULL DEFAULT ''"))
         set_cols = cols(conn, "settings")
         if set_cols and "site_id" not in set_cols:
             # 旧スキーマ(キーのみ)は作り直す。設定はデフォルト値に戻る

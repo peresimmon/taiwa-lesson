@@ -993,6 +993,86 @@ async def test_trust_safety(users, admin_headers):
     requests.delete(f"{BASE}/api/admin/teams/{t['id']}", headers=admin_headers)
 
 
+def test_team_v2_and_profile(users, admin_headers):
+    print("[18] チーム作りこみ(設定・複数リーダー・脱退)とマイページ")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}
+    suffix = secrets.token_hex(3)
+
+    # チーム作成 + users[0]をリーダー、users[1]をメンバーに
+    t = requests.post(f"{BASE}/api/admin/teams", headers=admin_headers,
+                      json={"name": f"V2_{suffix}", "description": "最初の説明"}).json()
+    tid = t["id"]
+    requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                  json={"username": users[0]["username"], "is_leader": True})
+    requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                  json={"username": users[1]["username"]})
+
+    # チーム詳細
+    r = requests.get(f"{BASE}/api/teams/{tid}", headers=h0)
+    d = r.json()
+    check("チーム詳細を取得", r.status_code == 200 and d["description"] == "最初の説明"
+          and d["is_leader"] and len(d["members"]) == 2 and "stats" in d, d)
+    # 部外者は詳細を見られない
+    sfx2 = secrets.token_hex(3)
+    out = requests.post(f"{BASE}/api/register",
+                        json={"username": f"out_{sfx2}", "password": "pass123"}).json()
+    r = requests.get(f"{BASE}/api/teams/{tid}",
+                     headers={"Authorization": f"Bearer {out['token']}"})
+    check("部外者はチーム詳細不可", r.status_code == 403, r.text)
+
+    # リーダーがチーム設定(名前・説明)を変更できる
+    r = requests.put(f"{BASE}/api/teams/{tid}", headers=h0,
+                     json={"name": f"V2改_{suffix}", "description": "新しい説明"})
+    check("リーダーがチーム設定を変更", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/teams/{tid}", headers=h1)
+    check("変更が反映される", r.json()["name"] == f"V2改_{suffix}"
+          and r.json()["description"] == "新しい説明", r.text)
+    r = requests.put(f"{BASE}/api/teams/{tid}", headers=h1,
+                     json={"name": "不正", "description": ""})
+    check("一般メンバーは設定変更不可", r.status_code == 403, r.text)
+
+    # 複数リーダー: リーダーが共同リーダーを任命できる
+    uid1 = requests.get(f"{BASE}/api/me", headers=h1).json()["id"]
+    uid0 = requests.get(f"{BASE}/api/me", headers=h0).json()["id"]
+    r = requests.put(f"{BASE}/api/teams/{tid}/members/{uid1}/leader", headers=h0,
+                     json={"is_leader": True})
+    check("リーダーが共同リーダーを任命", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/teams/{tid}", headers=h0)
+    leaders = [m for m in r.json()["members"] if m["is_leader"]]
+    check("リーダーが複数人になる", len(leaders) == 2, r.json()["members"])
+    r = requests.put(f"{BASE}/api/teams/{tid}/members/{uid0}/leader", headers=h0,
+                     json={"is_leader": False})
+    check("自分のリーダー権限は変更不可", r.status_code == 400, r.text)
+    # 共同リーダーが招待できる
+    r = requests.post(f"{BASE}/api/teams/{tid}/members", headers=h1,
+                      json={"username": f"out_{sfx2}"})
+    check("共同リーダーが招待できる", r.status_code == 201, r.text)
+
+    # 脱退: 一般メンバーは自分で脱退できる
+    out_h = {"Authorization": f"Bearer {out['token']}"}
+    out_id = requests.get(f"{BASE}/api/me", headers=out_h).json()["id"]
+    r = requests.delete(f"{BASE}/api/teams/{tid}/members/{out_id}", headers=out_h)
+    check("メンバーが自分で脱退できる", r.status_code == 200, r.text)
+    # リーダーの脱退: 他にリーダーがいれば可能
+    r = requests.delete(f"{BASE}/api/teams/{tid}/members/{uid1}", headers=h1)
+    check("共同リーダーは脱退できる(他にリーダーがいる)", r.status_code == 200, r.text)
+    # 最後のリーダーは脱退できない
+    r = requests.delete(f"{BASE}/api/teams/{tid}/members/{uid0}", headers=h0)
+    check("最後のリーダーは脱退できない", r.status_code == 400, r.text)
+
+    # マイページ: メール変更 + 自分の情報
+    r = requests.get(f"{BASE}/api/me", headers=h0)
+    check("meに登録日とメールが含まれる", "created_at" in r.json() and "email" in r.json(), r.text)
+    r = requests.put(f"{BASE}/api/me", headers=h0, json={"email": "me@example.com"})
+    check("メールアドレスを変更", r.status_code == 200 and r.json()["email"] == "me@example.com", r.text)
+    r = requests.put(f"{BASE}/api/me", headers=h0, json={"email": ""})
+    check("メールアドレスを削除", r.status_code == 200 and r.json()["email"] == "", r.text)
+
+    requests.delete(f"{BASE}/api/admin/teams/{tid}", headers=admin_headers)
+    requests.delete(f"{BASE}/api/admin/users/{out_id}", headers=admin_headers)
+
+
 def test_demo_data(users, admin_headers):
     print("[17] デモデータ生成・削除")
     user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1071,6 +1151,7 @@ async def main():
     test_user_admin_extras(users, admin_headers)
     await test_call_experience(users, admin_headers)
     await test_trust_safety(users, admin_headers)  # ブロックを作るため最後に実行
+    test_team_v2_and_profile(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

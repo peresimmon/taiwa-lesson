@@ -28,7 +28,7 @@
   <header>
     <h1><span id="site-title">対話のおけいこ</span><small id="site-subtitle">TAIWA NO OKEIKO</small></h1>
     <div id="user-info" class="hidden">
-      <span id="user-name"></span>
+      <button id="user-name" class="user-name-btn" title="マイページ"></button>
       <button id="btn-admin" class="btn-text hidden">管理画面</button>
       <button id="btn-sysadmin" class="btn-text hidden">システム管理</button>
       <button id="btn-logout" class="btn-text">ログアウト</button>
@@ -203,17 +203,7 @@
         <div class="panel">
           <h3>マイチーム</h3>
           <ul id="team-list" class="event-list"></ul>
-          <div id="team-detail" class="hidden">
-            <div class="team-detail-head">
-              <strong id="team-detail-name"></strong>
-              <span id="team-detail-stats" class="note"></span>
-            </div>
-            <form id="team-invite-form" class="inline-form hidden">
-              <input type="text" id="team-invite-name" placeholder="ユーザー名を招待" required minlength="2" maxlength="50">
-              <button type="submit" class="btn-small">招待</button>
-            </form>
-            <ul id="team-member-list" class="history-list"></ul>
-          </div>
+          <p class="note">チームを開くと、メンバーやチーム掲示板・予定を確認できます。</p>
           <p id="team-error" class="error"></p>
         </div>
       </div>
@@ -354,6 +344,106 @@
       <h2>振り返りを記録しました</h2>
       <p>日々の積み重ねが「聴く力」を育てます。</p>
       <button id="btn-back-lobby" class="btn-primary">ホームへ戻る</button>
+    </section>
+
+    <!-- チーム画面(メンバー・リーダー用。管理画面に入れないリーダーの導線) -->
+    <section id="screen-team" class="screen hidden">
+      <div class="panel admin-bar">
+        <h2 id="team-screen-name"></h2>
+        <button id="btn-team-back" class="btn-secondary">ホームへ戻る</button>
+      </div>
+      <div class="dash-grid">
+        <div class="panel">
+          <h3>チーム情報</h3>
+          <p id="team-screen-desc" class="note"></p>
+          <div class="stats report-stats" id="team-screen-stats"></div>
+          <form id="team-edit-form" class="hidden">
+            <label>チーム名
+              <input type="text" id="team-edit-name" required maxlength="100">
+            </label>
+            <label>チームの説明
+              <textarea id="team-edit-desc" rows="2" maxlength="500" placeholder="チームの目的やルールなど"></textarea>
+            </label>
+            <button type="submit" class="btn-small">チーム設定を保存</button>
+            <p id="team-edit-msg" class="note"></p>
+          </form>
+          <button type="button" id="btn-team-leave" class="btn-text danger">このチームから脱退する</button>
+        </div>
+
+        <div class="panel">
+          <h3>メンバー</h3>
+          <form id="team-screen-invite" class="inline-form hidden">
+            <input type="text" id="team-screen-invite-name" placeholder="ユーザー名を招待" required minlength="2" maxlength="50">
+            <button type="submit" class="btn-small">招待</button>
+          </form>
+          <ul id="team-screen-members" class="history-list"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>チーム掲示板</h3>
+          <form id="team-post-form" class="inline-form">
+            <input type="text" id="team-post-body" placeholder="チームに共有…" required maxlength="1000">
+            <button type="submit" class="btn-small">投稿</button>
+          </form>
+          <ul id="team-post-list" class="post-list"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>今月のチーム予定</h3>
+          <ul id="team-event-list" class="event-list"></ul>
+          <div id="team-screen-reports" class="hidden">
+            <div class="setting-group-title">このチームへの通報（リーダーのみ）</div>
+            <ul id="team-screen-report-list" class="announcement-list"></ul>
+          </div>
+        </div>
+      </div>
+      <p id="team-screen-error" class="error"></p>
+    </section>
+
+    <!-- マイページ(右上のユーザー名から) -->
+    <section id="screen-profile" class="screen hidden">
+      <div class="panel admin-bar">
+        <h2>マイページ</h2>
+        <button id="btn-profile-back" class="btn-secondary">ホームへ戻る</button>
+      </div>
+      <div class="dash-grid">
+        <div class="panel">
+          <h3>プロフィール</h3>
+          <ul class="room-detail-list" id="profile-info"></ul>
+          <form id="email-form">
+            <label>メールアドレス（パスワードリセットの案内などに使用。空欄で削除）
+              <input type="email" id="profile-email" maxlength="120">
+            </label>
+            <button type="submit" class="btn-small">メールを保存</button>
+            <p id="email-msg" class="note"></p>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h3>パスワード変更</h3>
+          <form id="profile-pw-form">
+            <label>現在のパスワード
+              <input type="password" id="ppw-current" required minlength="6" maxlength="128" autocomplete="current-password">
+            </label>
+            <label>新しいパスワード（6文字以上）
+              <input type="password" id="ppw-new" required minlength="6" maxlength="128" autocomplete="new-password">
+            </label>
+            <button type="submit" class="btn-small">変更する</button>
+            <p id="ppw-msg" class="note"></p>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h3>セッション履歴</h3>
+          <ul id="profile-history" class="history-list"></ul>
+        </div>
+
+        <div class="panel">
+          <h3>所属チーム</h3>
+          <ul id="profile-teams" class="event-list"></ul>
+        </div>
+      </div>
+      <p id="profile-error" class="error"></p>
     </section>
 
     <!-- 管理画面(管理者のみ) -->
