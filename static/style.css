@@ -399,6 +399,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .admin-table td { padding: 7px 8px; border-bottom: 1px dashed var(--border); }
 .admin-table .nowrap { white-space: nowrap; }
+.admin-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.admin-table th.sortable:hover { color: var(--primary); }
+.admin-table th.sorted { color: var(--primary); }
+.row-inactive td { opacity: 0.45; }
+.row-inactive .admin-actions { opacity: 1; }
+.role-select-mini {
+  padding: 4px 6px; border: 1.5px solid var(--border); border-radius: 8px;
+  font-family: inherit; font-size: 0.8rem; background: var(--bg); color: var(--text);
+}
 .admin-table tr:last-child td { border-bottom: none; }
 .admin-table .role-tag { font-size: 0.68rem; padding: 2px 8px; white-space: nowrap; display: inline-block; }
 .admin-actions { white-space: nowrap; }

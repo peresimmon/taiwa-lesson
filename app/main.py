@@ -347,7 +347,11 @@ class LeaderIn(BaseModel):
 
 
 class RoleIn(BaseModel):
-    role: str = Field(pattern=r"^(user|moderator)$")
+    role: str = Field(pattern=r"^(user|moderator|site_admin)$")
+
+
+class ActiveIn(BaseModel):
+    is_active: bool
 
 
 class RoomIn(BaseModel):
@@ -425,6 +429,8 @@ def current_user(
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="ユーザーが存在しません")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="このアカウントは無効化されています")
     return user
 
 
@@ -493,6 +499,8 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         )
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="サイトID・ユーザー名・パスワードのいずれかが違います")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="このアカウントは無効化されています。管理者にお問い合わせください")
     return token_response(user, site)
 
 
@@ -1373,6 +1381,8 @@ def _user_rows(db: Session, site_id: int) -> list[dict]:
             "id": u.id,
             "username": u.username,
             "role": u.role,
+            "is_active": u.is_active,
+            "email": u.email or "",
             "created_at": u.created_at.isoformat(),
             "session_count": counts.get(u.id, 0),
         }
@@ -1597,16 +1607,69 @@ def admin_set_role(
     admin: User = Depends(site_admin_user),
     db: Session = Depends(get_db),
 ):
-    """一般ユーザー⇔モデレータの切替(サイト管理者のみ)"""
+    """ロール変更(一般・モデレータ・サイト管理者)。サイト管理者のみ"""
     target = db.get(User, user_id)
     if target is None or target.site_id != admin.site_id:
         raise HTTPException(status_code=404, detail="ユーザーが存在しません")
-    if target.role in ("site_admin", "system_admin"):
-        raise HTTPException(status_code=400, detail="管理者のロールは変更できません")
+    if target.role == "system_admin":
+        raise HTTPException(status_code=400, detail="システム管理者のロールは変更できません")
+    if target.id == admin.id:
+        raise HTTPException(status_code=400, detail="自分のロールは変更できません")
     target.role = body.role
     audit(db, admin, "role_change", f"{target.username} → {body.role}")
     db.commit()
     return {"ok": True}
+
+
+@app.put("/api/admin/users/{user_id}/active")
+def admin_set_active(
+    user_id: int,
+    body: ActiveIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    """ユーザーの有効化/無効化。無効化中はログイン・API利用ができない"""
+    target = db.get(User, user_id)
+    if target is None or target.site_id != admin.site_id:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    if target.role in ("site_admin", "system_admin"):
+        raise HTTPException(status_code=400, detail="管理者は無効化できません")
+    target.is_active = body.is_active
+    audit(db, admin, "user_enable" if body.is_active else "user_disable", target.username)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/admin/users/export")
+def admin_users_export(
+    admin: User = Depends(site_admin_user), db: Session = Depends(get_db)
+):
+    """ユーザー一覧のCSVエクスポート"""
+    from fastapi.responses import Response
+
+    def esc(v) -> str:
+        s = str(v if v is not None else "")
+        return '"' + s.replace('"', '""') + '"'
+
+    lines = ["ID,ユーザー名,権限,状態,メール,登録日,セッション数"]
+    role_names = {
+        "system_admin": "システム管理者", "site_admin": "サイト管理者",
+        "moderator": "モデレータ", "user": "一般",
+    }
+    for u in _user_rows(db, admin.site_id):
+        lines.append(",".join([
+            esc(u["id"]), esc(u["username"]), esc(role_names.get(u["role"], u["role"])),
+            esc("有効" if u["is_active"] else "無効"), esc(u["email"]),
+            esc(u["created_at"]), esc(u["session_count"]),
+        ]))
+    csv_data = "﻿" + "\n".join(lines)  # BOM付きでExcelの文字化けを防ぐ
+    audit(db, admin, "users_export", f"{len(lines) - 1}件")
+    db.commit()
+    return Response(
+        content=csv_data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=users.csv"},
+    )
 
 
 @app.get("/api/admin/users/{user_id}/surveys")
@@ -1958,7 +2021,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
         user = db.get(User, user_id)
     finally:
         db.close()
-    if user is None:
+    if user is None or not user.is_active:
         await ws.close(code=4001, reason="unknown user")
         return
     if user.must_change_password:

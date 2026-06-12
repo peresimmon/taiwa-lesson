@@ -377,7 +377,7 @@
       <!-- ページ1: ユーザー管理(横幅いっぱい) -->
       <div class="admin-page" id="admin-page-users">
         <div class="panel panel-wide">
-          <h3>ユーザー一覧</h3>
+          <h3>ユーザー一覧 <button type="button" id="btn-export-users" class="btn-small" style="float:right">CSVエクスポート</button></h3>
           <form id="admin-user-form" class="inline-form">
             <input type="text" id="new-user-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
             <input type="text" id="new-user-pass" placeholder="初期パスワード" required minlength="6" maxlength="128">
@@ -394,7 +394,15 @@
           <div class="admin-table-wrap">
             <table class="admin-table">
               <thead>
-                <tr><th>ID</th><th>ユーザー名</th><th>権限</th><th>登録日</th><th>回数</th><th></th></tr>
+                <tr id="admin-user-head">
+                  <th class="sortable" data-key="id">ID</th>
+                  <th class="sortable" data-key="username">ユーザー名</th>
+                  <th class="sortable" data-key="role">権限</th>
+                  <th class="sortable" data-key="is_active">状態</th>
+                  <th class="sortable" data-key="created_at">登録日</th>
+                  <th class="sortable" data-key="session_count">回数</th>
+                  <th></th>
+                </tr>
               </thead>
               <tbody id="admin-user-rows"></tbody>
             </table>

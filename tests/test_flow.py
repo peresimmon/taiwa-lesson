@@ -760,6 +760,65 @@ def test_extras(users, admin_headers):
     requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
 
 
+def test_user_admin_extras(users, admin_headers):
+    print("[14] ユーザー管理(ロール変更・有効/無効・CSV)")
+    suffix = secrets.token_hex(3)
+
+    # テスト用ユーザーを作成
+    r = requests.post(f"{BASE}/api/admin/users", headers=admin_headers,
+                      json={"username": f"target_{suffix}", "password": "target123"})
+    check("テストユーザー作成", r.status_code == 201, r.text)
+    uid = r.json()["id"]
+
+    # 無効化 → ログイン不可・トークンも無効
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"target_{suffix}", "password": "target123"})
+    t_token = r.json()["token"]
+    r = requests.put(f"{BASE}/api/admin/users/{uid}/active", headers=admin_headers,
+                     json={"is_active": False})
+    check("無効化できる", r.status_code == 200, r.text)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"target_{suffix}", "password": "target123"})
+    check("無効化中はログイン不可", r.status_code == 403, r.text)
+    r = requests.get(f"{BASE}/api/me", headers={"Authorization": f"Bearer {t_token}"})
+    check("無効化中は既存トークンも無効", r.status_code == 403, r.text)
+    r = requests.put(f"{BASE}/api/admin/users/{uid}/active", headers=admin_headers,
+                     json={"is_active": True})
+    check("有効化できる", r.status_code == 200, r.text)
+    r = requests.post(f"{BASE}/api/login",
+                      json={"username": f"target_{suffix}", "password": "target123"})
+    check("有効化後はログインできる", r.status_code == 200, r.text)
+
+    # ロール変更(サイト管理者まで昇格・降格できる)
+    r = requests.put(f"{BASE}/api/admin/users/{uid}/role", headers=admin_headers,
+                     json={"role": "site_admin"})
+    check("サイト管理者に昇格できる", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/admin/users", headers=admin_headers)
+    row = next(u for u in r.json() if u["id"] == uid)
+    check("一覧にロールが反映される", row["role"] == "site_admin", row)
+    r = requests.put(f"{BASE}/api/admin/users/{uid}/role", headers=admin_headers,
+                     json={"role": "user"})
+    check("一般に降格できる", r.status_code == 200, r.text)
+    # システム管理者(自分)のロールは変更不可
+    admin_id = next(u["id"] for u in requests.get(f"{BASE}/api/admin/users", headers=admin_headers).json()
+                    if u["role"] == "system_admin")
+    r = requests.put(f"{BASE}/api/admin/users/{admin_id}/role", headers=admin_headers,
+                     json={"role": "user"})
+    check("システム管理者は変更不可", r.status_code == 400, r.text)
+    # 管理者は無効化できない
+    r = requests.put(f"{BASE}/api/admin/users/{admin_id}/active", headers=admin_headers,
+                     json={"is_active": False})
+    check("管理者は無効化できない", r.status_code == 400, r.text)
+
+    # ユーザー一覧CSV
+    r = requests.get(f"{BASE}/api/admin/users/export", headers=admin_headers)
+    check("ユーザーCSVエクスポート",
+          r.status_code == 200 and "text/csv" in r.headers.get("content-type", "")
+          and f"target_{suffix}" in r.text and "状態" in r.text, r.headers)
+
+    requests.delete(f"{BASE}/api/admin/users/{uid}", headers=admin_headers)
+
+
 async def test_call_experience(users, admin_headers):
     print("[15] 役割交代・チャット・話題カード・複数設問・CSV")
     h0 = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -948,6 +1007,7 @@ async def main():
     test_teams(users, admin_headers)
     await test_rooms(users, admin_headers)
     test_extras(users, admin_headers)
+    test_user_admin_extras(users, admin_headers)
     await test_call_experience(users, admin_headers)
     await test_trust_safety(users, admin_headers)  # ブロックを作るため最後に実行
     restore_admin_password(admin_headers)

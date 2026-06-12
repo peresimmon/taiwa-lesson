@@ -54,6 +54,7 @@ class User(Base):
     # "system_admin" | "site_admin" | "moderator" | "user"
     role: Mapped[str] = mapped_column(String(20), default="user")
     email: Mapped[str | None] = mapped_column(String(120), nullable=True)  # メール連携用(任意)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # False=無効化(ログイン不可)
     # 初期パスワードのアカウントは初回ログイン時に変更を強制する
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -292,6 +293,8 @@ def _migrate() -> None:
             conn.execute(text("ALTER TABLE events ADD COLUMN room_id INTEGER"))
         if user_cols and "email" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
+        if user_cols and "is_active" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
         sv_cols = cols(conn, "surveys")
         if sv_cols and "answers" not in sv_cols:
             conn.execute(text("ALTER TABLE surveys ADD COLUMN answers TEXT NOT NULL DEFAULT ''"))

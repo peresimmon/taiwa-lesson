@@ -2121,32 +2121,99 @@ async function showAdmin() {
   }
 }
 
+let adminUsers = [];
+let adminUserSort = { key: "id", dir: 1 }; // dir: 1=昇順, -1=降順
+
 async function loadAdminUsers() {
-  const users = await api("/api/admin/users");
-  $("admin-user-rows").innerHTML = users
-    .map(
-      (u) => {
-        const isAdmin = ["site_admin", "system_admin"].includes(u.role);
-        return `<tr>
+  adminUsers = await api("/api/admin/users");
+  renderAdminUsers();
+}
+
+// 列見出しクリックでソート(同じ列をもう一度押すと昇順/降順を切替)
+document.querySelectorAll("#admin-user-head .sortable").forEach((th) => {
+  th.dataset.label = th.textContent;
+  th.onclick = () => {
+    const key = th.dataset.key;
+    if (adminUserSort.key === key) {
+      adminUserSort.dir *= -1;
+    } else {
+      adminUserSort = { key, dir: 1 };
+    }
+    renderAdminUsers();
+  };
+});
+
+function renderAdminUsers() {
+  // 見出しにソート方向(▲▼)を表示
+  document.querySelectorAll("#admin-user-head .sortable").forEach((th) => {
+    const active = th.dataset.key === adminUserSort.key;
+    th.classList.toggle("sorted", active);
+    th.textContent = active
+      ? `${th.dataset.label} ${adminUserSort.dir === 1 ? "▲" : "▼"}`
+      : th.dataset.label;
+  });
+  const { key, dir } = adminUserSort;
+  const sorted = [...adminUsers].sort((a, b) => {
+    const va = a[key], vb = b[key];
+    if (typeof va === "string" && typeof vb === "string") return va.localeCompare(vb, "ja") * dir;
+    return (va === vb ? 0 : va > vb ? 1 : -1) * dir;
+  });
+
+  $("admin-user-rows").innerHTML = sorted
+    .map((u) => {
+      const isSelf = u.username === username;
+      const isAdminRole = ["site_admin", "system_admin"].includes(u.role);
+      // ロール変更: システム管理者と自分自身は変更不可
+      const roleCell = u.role === "system_admin" || isSelf
+        ? `<span class="role-tag speaker">${roleLabels[u.role] || u.role}</span>`
+        : `<select class="role-select-mini" data-roleuser="${u.id}">
+            <option value="user" ${u.role === "user" ? "selected" : ""}>一般</option>
+            <option value="moderator" ${u.role === "moderator" ? "selected" : ""}>モデレータ</option>
+            <option value="site_admin" ${u.role === "site_admin" ? "selected" : ""}>サイト管理者</option>
+          </select>`;
+      return `<tr class="${u.is_active ? "" : "row-inactive"}">
         <td>${u.id}</td>
-        <td>${escapeHtml(u.username)}</td>
-        <td>${isAdmin ? `<span class="role-tag speaker">${roleLabels[u.role]}</span>` : (roleLabels[u.role] || u.role)}</td>
-        <td>${parseUTC(u.created_at).toLocaleDateString("ja-JP")}</td>
+        <td class="nowrap">${escapeHtml(u.username)}</td>
+        <td class="nowrap">${roleCell}</td>
+        <td class="nowrap">${u.is_active ? "有効" : '<span class="role-tag speaker">無効</span>'}</td>
+        <td class="nowrap">${parseUTC(u.created_at).toLocaleDateString("ja-JP")}</td>
         <td>${u.session_count}</td>
         <td class="admin-actions">
           <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.username)}">履歴</button>
-          ${isAdmin ? "" : `<button class="btn-text" data-setrole="${u.id}" data-newrole="${u.role === "moderator" ? "user" : "moderator"}">${u.role === "moderator" ? "モデレータ解除" : "モデレータ化"}</button>
+          ${isAdminRole ? "" : `<button class="btn-text" data-active="${u.id}" data-next="${!u.is_active}" data-name="${escapeHtml(u.username)}">${u.is_active ? "無効化" : "有効化"}</button>
           <button class="btn-text" data-resetpw="${u.id}" data-name="${escapeHtml(u.username)}">PWリセット</button>
           <button class="btn-text" data-warnuser="${u.id}" data-name="${escapeHtml(u.username)}">警告</button>
           <button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
         </td>
       </tr>`;
-      }
-    )
+    })
     .join("");
 
   $("admin-user-rows").querySelectorAll("[data-history]").forEach((btn) => {
     btn.onclick = () => loadAdminHistory(btn.dataset.history, btn.dataset.name);
+  });
+  $("admin-user-rows").querySelectorAll("[data-roleuser]").forEach((sel) => {
+    sel.onchange = async () => {
+      try {
+        await api(`/api/admin/users/${sel.dataset.roleuser}/role`, "PUT", { role: sel.value });
+        await loadAdminUsers();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+        await loadAdminUsers(); // 失敗時は表示を元に戻す
+      }
+    };
+  });
+  $("admin-user-rows").querySelectorAll("[data-active]").forEach((btn) => {
+    btn.onclick = async () => {
+      const enable = btn.dataset.next === "true";
+      if (!enable && !confirm(`「${btn.dataset.name}」を無効化します。ログインできなくなります。よろしいですか？`)) return;
+      try {
+        await api(`/api/admin/users/${btn.dataset.active}/active`, "PUT", { is_active: enable });
+        await loadAdminUsers();
+      } catch (err) {
+        $("admin-error").textContent = err.message;
+      }
+    };
   });
   $("admin-user-rows").querySelectorAll("[data-resetpw]").forEach((btn) => {
     btn.onclick = async () => {
@@ -2166,16 +2233,6 @@ async function loadAdminUsers() {
   $("admin-user-rows").querySelectorAll("[data-warnuser]").forEach((btn) => {
     btn.onclick = () => issueWarning(parseInt(btn.dataset.warnuser, 10), btn.dataset.name);
   });
-  $("admin-user-rows").querySelectorAll("[data-setrole]").forEach((btn) => {
-    btn.onclick = async () => {
-      try {
-        await api(`/api/admin/users/${btn.dataset.setrole}/role`, "PUT", { role: btn.dataset.newrole });
-        await loadAdminUsers();
-      } catch (err) {
-        $("admin-error").textContent = err.message;
-      }
-    };
-  });
   $("admin-user-rows").querySelectorAll("[data-delete]").forEach((btn) => {
     btn.onclick = async () => {
       if (!confirm(`ユーザー「${btn.dataset.name}」と関連データを削除します。よろしいですか？`)) return;
@@ -2188,6 +2245,24 @@ async function loadAdminUsers() {
     };
   });
 }
+
+// ユーザー一覧のCSVエクスポート
+$("btn-export-users").onclick = async () => {
+  try {
+    const res = await fetch("/api/admin/users/export", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("エクスポートに失敗しました");
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "users.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    $("admin-error").textContent = err.message;
+  }
+};
 
 async function loadAdminHistory(userId, name) {
   $("admin-error").textContent = "";
