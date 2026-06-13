@@ -37,7 +37,7 @@
   <header>
     <h1 id="site-home" title="ホームへ戻る"><span id="site-title">対話のおけいこ</span><small id="site-subtitle">TAIWA NO OKEIKO</small></h1>
     <div id="user-info" class="hidden">
-      <button id="btn-admin" class="btn-text hidden">管理画面</button>
+      <button id="btn-admin" class="admin-btn hidden" title="ユーザー・チーム・お知らせの管理">🗂 管理画面</button>
       <button id="btn-sysadmin" class="sysadmin-btn hidden" title="全サイトを横断する特権操作です">🛡 システム管理</button>
       <button id="btn-dev" class="dev-btn hidden" title="DBの中身を閲覧する開発者向けツール(参照のみ)">🛠 開発者</button>
       <div class="user-menu-wrap">
@@ -604,7 +604,7 @@
               </table>
             </div>
           </div>
-          <div class="panel">
+          <div class="panel" id="admin-audit-panel">
             <h3>監査ログ</h3>
             <ul id="audit-list" class="announcement-list audit-list"></ul>
           </div>
@@ -627,6 +627,9 @@
           <div class="panel">
             <h3>お知らせ管理</h3>
             <form id="admin-announce-form">
+              <label>表示範囲
+                <select id="ann-scope"></select>
+              </label>
               <label>タイトル
                 <input type="text" id="ann-title" required maxlength="200">
               </label>

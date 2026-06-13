@@ -143,6 +143,16 @@ header h1 small { font-size: 0.7rem; font-weight: 400; opacity: 0.8; margin-left
 }
 .user-name-btn:hover { background: rgba(255, 255, 255, 0.25); }
 
+/* 管理画面ボタン: システム管理・開発者と並ぶピル型の強調ボタン(青系) */
+.admin-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1.5px solid #7fc4ff; color: #d6ecff;
+  padding: 5px 14px; border-radius: 999px;
+  font-size: 0.82rem; font-weight: 700; font-family: inherit;
+  cursor: pointer; transition: all 0.15s;
+}
+.admin-btn:hover { background: rgba(127, 196, 255, 0.22); box-shadow: 0 0 8px rgba(127, 196, 255, 0.5); }
+
 /* システム管理ボタン: 全サイト横断の特権操作だと一目で分かる特別な見た目 */
 .sysadmin-btn {
   background: rgba(0, 0, 0, 0.3);
@@ -538,6 +548,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--primary); border-color: var(--primary);
   color: var(--on-primary); font-weight: 600;
 }
+
+/* チームリーダーが管理画面を開いたとき、サイト管理者専用の要素を隠す */
+#screen-admin.leader-only .admin-tab[data-page="settings"],
+#screen-admin.leader-only #admin-audit-panel,
+#screen-admin.leader-only #admin-user-form,
+#screen-admin.leader-only #admin-page-users .csv-box,
+#screen-admin.leader-only #btn-export-users,
+#screen-admin.leader-only #btn-export-csv,
+#screen-admin.leader-only #admin-team-form { display: none !important; }
 
 /* 横幅いっぱいのパネル(ユーザー一覧・通報など) */
 .panel-wide { margin-bottom: 20px; }

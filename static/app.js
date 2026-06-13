@@ -62,6 +62,8 @@ let displayName = "";
 let userRole = "user";
 /** ログイン中のサイトがメインサイトか。開発者モードの表示判定に使う。 @type {boolean} */
 let isMainSite = false;
+/** いずれかのチームのリーダーか。管理画面ボタンの表示判定に使う。 @type {boolean} */
+let isTeamLeader = false;
 /** サイト設定から取得するセッション時間(分)。 @type {number} */
 let sessionMinutes = 10;
 
@@ -169,12 +171,13 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName, newIsMainSite, newTheme) {
+function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName, newIsMainSite, newTheme, newIsTeamLeader) {
   token = newToken;
   username = newUsername;
   displayName = newDisplayName || newUsername;
   userRole = newRole || "user";
   isMainSite = !!newIsMainSite;
+  isTeamLeader = !!newIsTeamLeader;
   localStorage.setItem("vm_token", token);
   localStorage.setItem("vm_username", username);
   // テーマはユーザーに紐づく。ログインしたユーザーのテーマを適用してキャッシュする
@@ -187,12 +190,18 @@ function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisp
   }
   updateHeaderName();
   $("user-info").classList.remove("hidden");
-  $("btn-admin").classList.toggle("hidden", !["site_admin", "system_admin"].includes(userRole));
+  // 管理画面はサイト管理者またはチームリーダーに表示(リーダーは管理対象のみのスコープ)
+  $("btn-admin").classList.toggle("hidden", !(isSiteAdminRole() || isTeamLeader));
   $("btn-sysadmin").classList.toggle("hidden", userRole !== "system_admin");
   // 開発者モードはシステム管理者かつメインサイトのときだけ
   $("btn-dev").classList.toggle("hidden", !(userRole === "system_admin" && isMainSite));
   $("dash-username").textContent = displayName;
   showLobby();
+}
+
+/** 現在のユーザーがサイト管理者(またはシステム管理者)か。 @returns {boolean} */
+function isSiteAdminRole() {
+  return ["site_admin", "system_admin"].includes(userRole);
 }
 
 /* ヘッダーのユーザーアイコンとメニューに表示名を反映する */
@@ -226,6 +235,7 @@ function logout() {
   displayName = "";
   userRole = "user";
   isMainSite = false;
+  isTeamLeader = false;
   $("btn-admin").classList.add("hidden");
   $("btn-sysadmin").classList.add("hidden");
   $("btn-dev").classList.add("hidden");
@@ -301,7 +311,7 @@ $("auth-form").onsubmit = async (e) => {
     };
     if (IS_SUB_LOGIN) body.site = $("auth-site").value.trim();
     const data = await api(`/api/${authMode === "login" ? "login" : "register"}`, "POST", body);
-    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name, data.is_main_site, data.theme);
+    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name, data.is_main_site, data.theme, data.is_team_leader);
   } catch (err) {
     $("auth-error").textContent = err.message;
   }
@@ -319,7 +329,7 @@ $("password-form").onsubmit = async (e) => {
     $("pw-current").value = "";
     $("pw-new").value = "";
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username, me.is_main_site, me.theme);
+    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username, me.is_main_site, me.theme, me.is_team_leader);
   } catch (err) {
     $("pw-error").textContent = err.message;
   }
@@ -1855,7 +1865,7 @@ function renderAnnouncements(items) {
     ? items
         .map(
           (a) => `<li>
-            <div class="a-title">${escapeHtml(a.title)}</div>
+            <div class="a-title">${a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span> ` : ""}${escapeHtml(a.title)}</div>
             <div class="a-body">${escapeHtml(a.body)}</div>
             <div class="a-date">${parseUTC(a.created_at).toLocaleDateString("ja-JP")}</div>
           </li>`
@@ -2695,20 +2705,28 @@ document.querySelectorAll("#screen-admin .admin-tab").forEach((tab) => {
   tab.onclick = () => showAdminPage(tab.dataset.page);
 });
 
+/** 管理画面をリーダー権限のみ(サイト管理者でない)で開いているか。 @type {boolean} */
+let adminLeaderOnly = false;
+
 async function showAdmin() {
   $("admin-error").textContent = "";
+  // サイト管理者でないチームリーダーは「管理対象のみ」の絞り込みモードで開く
+  adminLeaderOnly = isTeamLeader && !isSiteAdminRole();
+  $("screen-admin").classList.toggle("leader-only", adminLeaderOnly);
   showScreen("admin");
   showAdminPage("users");
   try {
-    await Promise.all([
+    // チーム一覧を先に読む(お知らせの範囲セレクト・削除可否の判定に使うため)
+    await loadAdminTeams();
+    const tasks = [
       loadAdminUsers(),
-      loadAdminSettings(),
       loadAdminAnnouncements(),
-      loadAdminTeams(),
       loadAdminReport(),
-      loadAdminAudit(),
       loadAdminReports(),
-    ]);
+    ];
+    // サイト設定・監査ログはサイト管理者のみ(リーダーはAPIが403になるため呼ばない)
+    if (!adminLeaderOnly) tasks.push(loadAdminSettings(), loadAdminAudit());
+    await Promise.all(tasks);
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
@@ -2757,6 +2775,14 @@ function renderAdminUsers() {
   $("admin-user-rows").innerHTML = sorted
     .map((u) => {
       const isAdminRole = ["site_admin", "system_admin"].includes(u.role);
+      // チームリーダー(サイト管理者でない)は閲覧のみ。操作ボタンは出さない
+      const actions = adminLeaderOnly
+        ? `<button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">履歴</button>`
+        : `<button class="btn-text" data-edit="${u.id}">編集</button>
+          <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">履歴</button>
+          ${isAdminRole ? "" : `<button class="btn-text" data-resetpw="${u.id}" data-name="${escapeHtml(u.username)}">PWリセット</button>
+          <button class="btn-text" data-warnuser="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">警告</button>
+          <button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}`;
       return `<tr class="${u.is_active ? "" : "row-inactive"}">
         <td>${u.id}</td>
         <td class="nowrap">${escapeHtml(u.username)}</td>
@@ -2765,13 +2791,7 @@ function renderAdminUsers() {
         <td class="nowrap">${u.is_active ? "有効" : '<span class="role-tag speaker">無効</span>'}</td>
         <td class="nowrap">${parseUTC(u.created_at).toLocaleDateString("ja-JP")}</td>
         <td>${u.session_count}</td>
-        <td class="admin-actions">
-          <button class="btn-text" data-edit="${u.id}">編集</button>
-          <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">履歴</button>
-          ${isAdminRole ? "" : `<button class="btn-text" data-resetpw="${u.id}" data-name="${escapeHtml(u.username)}">PWリセット</button>
-          <button class="btn-text" data-warnuser="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">警告</button>
-          <button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
-        </td>
+        <td class="admin-actions">${actions}</td>
       </tr>`;
     })
     .join("");
@@ -3162,15 +3182,29 @@ async function loadAdminAudit() {
 }
 
 // --- チーム管理(サイト管理者) ---
+/** 管理画面のチーム一覧のキャッシュ(API側でサイト管理者=全件 / リーダー=率いるチームのみ)。 @type {Array<Object>} */
+let adminTeams = [];
+
+/** お知らせの表示範囲セレクトを更新する(サイト全体はサイト管理者のみ + 管理対象チーム) */
+function renderAnnounceScope() {
+  const sel = $("ann-scope");
+  if (!sel) return;
+  sel.innerHTML =
+    (adminLeaderOnly ? "" : '<option value="">サイト全体</option>') +
+    adminTeams.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}限定</option>`).join("");
+}
+
 async function loadAdminTeams() {
-  const teams = await api("/api/admin/teams");
+  adminTeams = await api("/api/admin/teams");
+  renderAnnounceScope();
+  const teams = adminTeams;
   $("admin-team-list").innerHTML = teams.length
     ? teams
         .map(
           (t) => `<li>
             <button class="team-link" data-tdetail="${t.id}">${escapeHtml(t.name)}</button>
             <span class="e-user">${t.members}人${t.leaders.length ? ` / リーダー: ${t.leaders.map(escapeHtml).join(", ")}` : ""}
-              <button class="btn-text danger" data-tdelete="${t.id}" data-name="${escapeHtml(t.name)}">削除</button>
+              ${adminLeaderOnly ? "" : `<button class="btn-text danger" data-tdelete="${t.id}" data-name="${escapeHtml(t.name)}">削除</button>`}
             </span>
           </li>`
         )
@@ -3327,14 +3361,21 @@ $("admin-team-form").onsubmit = async (e) => {
   }
 };
 
+/** 自分が削除できるお知らせか(サイト管理者は全て、リーダーは自分が率いるチーム限定のみ)。
+ * adminTeamsはAPI側でスコープ済み(リーダー時は率いるチームのみ) */
+function canDeleteAnnouncement(a) {
+  if (!adminLeaderOnly) return true;
+  return a.team_id != null && adminTeams.some((t) => t.id === a.team_id);
+}
+
 async function loadAdminAnnouncements() {
   const items = await api("/api/announcements");
   $("admin-announce-list").innerHTML = items.length
     ? items
         .map(
           (a) => `<li>
-            <div class="a-title">${escapeHtml(a.title)}
-              <button class="btn-text danger" data-ann="${a.id}">削除</button></div>
+            <div class="a-title">${a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span> ` : ""}${escapeHtml(a.title)}
+              ${canDeleteAnnouncement(a) ? `<button class="btn-text danger" data-ann="${a.id}">削除</button>` : ""}</div>
             <div class="a-body">${escapeHtml(a.body)}</div>
             <div class="a-date">${parseUTC(a.created_at).toLocaleDateString("ja-JP")}</div>
           </li>`
@@ -3356,9 +3397,11 @@ async function loadAdminAnnouncements() {
 $("admin-announce-form").onsubmit = async (e) => {
   e.preventDefault();
   try {
+    const scope = $("ann-scope").value;
     await api("/api/admin/announcements", "POST", {
       title: $("ann-title").value.trim(),
       body: $("ann-body").value.trim(),
+      team_id: scope ? parseInt(scope, 10) : null,
     });
     $("ann-title").value = "";
     $("ann-body").value = "";
@@ -4259,7 +4302,7 @@ if ("serviceWorker" in navigator) {
   }
   try {
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username, me.is_main_site, me.theme);
+    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username, me.is_main_site, me.theme, me.is_team_leader);
   } catch {
     logout();
   }

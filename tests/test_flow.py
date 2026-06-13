@@ -1342,6 +1342,93 @@ def test_user_theme(admin_headers):
             requests.delete(f"{BASE}/api/admin/users/{u['id']}", headers=admin_headers)
 
 
+def test_leader_admin(users, admin_headers):
+    print("[23] チームリーダーの管理画面(スコープ)+お知らせのチーム限定")
+    sfx = secrets.token_hex(3)
+
+    def reg(name):
+        return requests.post(f"{BASE}/api/register",
+                             json={"username": name, "password": "pass123"}).json()
+
+    leader = reg(f"ldr_{sfx}")
+    member = reg(f"mbr_{sfx}")
+    outsider = reg(f"out_{sfx}")
+
+    # 管理者がチームを作り、leaderをリーダー・memberをメンバーに
+    tid = requests.post(f"{BASE}/api/admin/teams", headers=admin_headers,
+                        json={"name": f"LT_{sfx}"}).json()["id"]
+    requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                  json={"username": f"ldr_{sfx}", "is_leader": True})
+    requests.post(f"{BASE}/api/teams/{tid}/members", headers=admin_headers,
+                  json={"username": f"mbr_{sfx}"})
+
+    # leader再ログインで is_team_leader が立つ
+    leader = requests.post(f"{BASE}/api/login",
+                           json={"username": f"ldr_{sfx}", "password": "pass123"}).json()
+    check("リーダーはis_team_leader=true", leader.get("is_team_leader") is True, leader)
+    lh = {"Authorization": f"Bearer {leader['token']}"}
+    oh = {"Authorization": f"Bearer {outsider['token']}"}
+
+    # ユーザー一覧は管理対象のみ
+    us = requests.get(f"{BASE}/api/admin/users", headers=lh)
+    names = sorted(u["username"] for u in us.json())
+    check("リーダーのユーザー一覧は管理対象のみ",
+          us.status_code == 200 and names == sorted([f"ldr_{sfx}", f"mbr_{sfx}"]), names)
+    # チームは率いるチームのみ
+    ts = requests.get(f"{BASE}/api/admin/teams", headers=lh).json()
+    check("リーダーのチーム一覧は率いるチームのみ",
+          len(ts) == 1 and ts[0]["id"] == tid, ts)
+    # レポートはスコープされ、管理対象人数のみ
+    rep = requests.get(f"{BASE}/api/admin/report", headers=lh).json()
+    check("リーダーのレポートはscoped・管理対象2名", rep.get("scoped") is True and rep["total_users"] == 2, rep)
+    # サイト設定・監査ログはサイト管理者のみ(403)
+    check("リーダーはサイト設定403", requests.get(f"{BASE}/api/admin/settings", headers=lh).status_code == 403)
+    check("リーダーは監査ログ403", requests.get(f"{BASE}/api/admin/audit", headers=lh).status_code == 403)
+    # 管理権限のない一般ユーザーは管理画面API403
+    check("非リーダーの一般ユーザーは管理API403",
+          requests.get(f"{BASE}/api/admin/users", headers=oh).status_code == 403)
+
+    # お知らせ: リーダーはチーム限定のみ投稿可、サイト全体は不可
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=lh,
+                      json={"title": f"team_{sfx}", "body": "チーム限定", "team_id": tid})
+    check("リーダーはチーム限定お知らせを投稿できる", r.status_code == 201, r.text)
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=lh,
+                      json={"title": "site", "body": "全体"})
+    check("リーダーのサイト全体お知らせは403", r.status_code == 403, r.text)
+    # 自分が率いていないチームへの投稿も不可
+    other_tid = requests.post(f"{BASE}/api/admin/teams", headers=admin_headers,
+                              json={"name": f"OT_{sfx}"}).json()["id"]
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=lh,
+                      json={"title": "x", "body": "x", "team_id": other_tid})
+    check("率いていないチームへの投稿は403", r.status_code == 403, r.text)
+
+    # 表示: メンバーには見え、部外者には見えない
+    ann_m = requests.get(f"{BASE}/api/announcements",
+                         headers={"Authorization": f"Bearer {member['token']}"}).json()
+    check("メンバーにチーム限定お知らせが見える",
+          any(a["title"] == f"team_{sfx}" and a["team_name"] == f"LT_{sfx}" for a in ann_m), ann_m)
+    ann_o = requests.get(f"{BASE}/api/announcements", headers=oh).json()
+    check("部外者にはチーム限定お知らせが見えない",
+          not any(a["title"] == f"team_{sfx}" for a in ann_o), ann_o)
+
+    # サイト管理者はサイト全体お知らせを投稿でき、誰にでも見える
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=admin_headers,
+                      json={"title": f"all_{sfx}", "body": "全体"})
+    check("サイト管理者はサイト全体お知らせを投稿できる", r.status_code == 201, r.text)
+    ann_o = requests.get(f"{BASE}/api/announcements", headers=oh).json()
+    check("サイト全体お知らせは部外者にも見える", any(a["title"] == f"all_{sfx}" for a in ann_o), ann_o)
+
+    # 後始末
+    requests.delete(f"{BASE}/api/admin/teams/{tid}", headers=admin_headers)
+    requests.delete(f"{BASE}/api/admin/teams/{other_tid}", headers=admin_headers)
+    for u in requests.get(f"{BASE}/api/admin/users", headers=admin_headers).json():
+        if u["username"].endswith(sfx):
+            requests.delete(f"{BASE}/api/admin/users/{u['id']}", headers=admin_headers)
+    for a in requests.get(f"{BASE}/api/announcements", headers=admin_headers).json():
+        if a["title"].endswith(sfx):
+            requests.delete(f"{BASE}/api/admin/announcements/{a['id']}", headers=admin_headers)
+
+
 def test_dev_mode(users, admin_headers):
     print("[20] 開発者モード(DBブラウザ)")
     h0 = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1492,6 +1579,7 @@ async def main():
     test_dev_mode(users, admin_headers)
     test_token_binding(users)
     test_user_theme(admin_headers)
+    test_leader_admin(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

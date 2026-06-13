@@ -305,6 +305,7 @@ class TokenOut(BaseModel):
     site: str = MAIN_SITE_SLUG
     site_name: str = ""
     is_main_site: bool = False  # メインサイトか(開発者モードの表示判定に使う)
+    is_team_leader: bool = False  # いずれかのチームのリーダーか(管理画面の表示判定に使う)
     theme: str = "standard"     # ユーザーに紐づく配色テーマ
     must_change_password: bool = False
 
@@ -439,9 +440,10 @@ class RoomManagerIn(BaseModel):
 
 
 class AnnouncementIn(BaseModel):
-    """お知らせの投稿の入力"""
+    """お知らせの投稿の入力。team_id指定=チーム限定 / 未指定=サイト全体"""
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=2000)
+    team_id: int | None = None
 
 
 class SettingsIn(BaseModel):
@@ -558,6 +560,16 @@ def dev_user(user: User = Depends(active_user), db: Session = Depends(get_db)) -
     return user
 
 
+def admin_or_leader_user(
+    user: User = Depends(active_user), db: Session = Depends(get_db)
+) -> User:
+    """管理画面の権限。サイト管理者、またはいずれかのチームのリーダー。
+    リーダーの場合、各APIは自分の管理対象(率いるチームとそのメンバー)にスコープされる"""
+    if _is_site_admin(user) or _is_team_leader(db, user):
+        return user
+    raise HTTPException(status_code=403, detail="管理権限が必要です")
+
+
 def get_main_site(db: Session) -> Site:
     site = db.query(Site).filter(Site.slug == MAIN_SITE_SLUG).first()
     if site is None:
@@ -565,7 +577,7 @@ def get_main_site(db: Session) -> Site:
     return site
 
 
-def token_response(user: User, site: Site) -> TokenOut:
+def token_response(user: User, site: Site, db: Session) -> TokenOut:
     return TokenOut(
         token=create_token(user.id, user.token_version),
         username=user.username,
@@ -574,6 +586,7 @@ def token_response(user: User, site: Site) -> TokenOut:
         site=site.slug,
         site_name=site.name,
         is_main_site=site.is_main,
+        is_team_leader=_is_team_leader(db, user),
         theme=user.theme or "standard",
         must_change_password=user.must_change_password,
     )
@@ -591,7 +604,7 @@ def register(body: AuthIn, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
-    return token_response(user, site)
+    return token_response(user, site, db)
 
 
 @app.post("/api/login", response_model=TokenOut)
@@ -609,7 +622,7 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="サイトID・ユーザー名・パスワードのいずれかが違います")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="このアカウントは無効化されています。管理者にお問い合わせください")
-    return token_response(user, site)
+    return token_response(user, site, db)
 
 
 @app.post("/api/password")
@@ -639,6 +652,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "site": site.slug if site else "",
         "site_name": site.name if site else "",
         "is_main_site": bool(site and site.is_main),
+        "is_team_leader": _is_team_leader(db, user),
         "theme": user.theme or "standard",
         "must_change_password": user.must_change_password,
     }
@@ -768,14 +782,24 @@ def _call_partner(db: Session, user: User, call_id: str) -> User:
     return partner
 
 
-def _led_team_member_ids(db: Session, user: User) -> set[int]:
-    """自分がリーダーを務めるチームの全メンバーのユーザーID"""
-    lead_ids = [
+def _led_team_ids(db: Session, user: User) -> set[int]:
+    """自分がリーダーを務めるチームのID集合"""
+    return {
         m.team_id
         for m in db.query(TeamMember).filter(
             TeamMember.user_id == user.id, TeamMember.is_leader.is_(True)
         )
-    ]
+    }
+
+
+def _is_team_leader(db: Session, user: User) -> bool:
+    """いずれかのチームのリーダーか"""
+    return bool(_led_team_ids(db, user))
+
+
+def _led_team_member_ids(db: Session, user: User) -> set[int]:
+    """自分がリーダーを務めるチームの全メンバーのユーザーID"""
+    lead_ids = _led_team_ids(db, user)
     if not lead_ids:
         return set()
     return {
@@ -1504,18 +1528,29 @@ def remove_room_manager(
 
 @app.get("/api/announcements")
 def announcements(user: User = Depends(active_user), db: Session = Depends(get_db)):
-    rows = (
-        db.query(Announcement)
-        .filter(Announcement.site_id == user.site_id)
-        .order_by(Announcement.created_at.desc())
-        .limit(20)
-        .all()
-    )
+    """サイト全体のお知らせ + 自分が所属するチーム限定のお知らせ"""
+    from sqlalchemy import or_
+
+    my_team_ids = [
+        m.team_id for m in db.query(TeamMember).filter(TeamMember.user_id == user.id)
+    ]
+    q = db.query(Announcement).filter(Announcement.site_id == user.site_id)
+    if my_team_ids:
+        q = q.filter(or_(Announcement.team_id.is_(None), Announcement.team_id.in_(my_team_ids)))
+    else:
+        q = q.filter(Announcement.team_id.is_(None))
+    rows = q.order_by(Announcement.created_at.desc()).limit(30).all()
+    team_ids = {a.team_id for a in rows if a.team_id}
+    team_names = {
+        t.id: t.name for t in db.query(Team).filter(Team.id.in_(team_ids)).all()
+    } if team_ids else {}
     return [
         {
             "id": a.id,
             "title": a.title,
             "body": a.body,
+            "team_id": a.team_id,
+            "team_name": team_names.get(a.team_id),
             "created_at": a.created_at.isoformat(),
         }
         for a in rows
@@ -1941,9 +1976,13 @@ def _user_rows(db: Session, site_id: int) -> list[dict]:
 
 
 @app.get("/api/admin/users")
-def admin_list_users(admin: User = Depends(site_admin_user), db: Session = Depends(get_db)):
-    """自サイトのユーザー一覧"""
-    return _user_rows(db, admin.site_id)
+def admin_list_users(admin: User = Depends(admin_or_leader_user), db: Session = Depends(get_db)):
+    """ユーザー一覧。サイト管理者は自サイト全員、チームリーダーは管理対象(率いるチームのメンバー)のみ"""
+    rows = _user_rows(db, admin.site_id)
+    if _is_site_admin(admin):
+        return rows
+    managed = _led_team_member_ids(db, admin)
+    return [r for r in rows if r["id"] in managed]
 
 
 @app.post("/api/admin/users", status_code=201)
@@ -2034,29 +2073,32 @@ def admin_bulk_users(
 
 
 @app.get("/api/admin/report")
-def admin_report(admin: User = Depends(site_admin_user), db: Session = Depends(get_db)):
-    """サイトの利用レポート(セッション数・評価・日別推移・チーム別)"""
+def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depends(get_db)):
+    """利用レポート(セッション数・評価・日別推移・チーム別)。サイト管理者は自サイト全体、
+    チームリーダーは管理対象(率いるチームとそのメンバー)のみにスコープされる"""
     from datetime import timedelta
 
     from sqlalchemy import func
 
     sid = admin.site_id
-    site_surveys = (
-        db.query(Survey).join(User, Survey.user_id == User.id).filter(User.site_id == sid)
-    )
+    site_admin = _is_site_admin(admin)
+    scope_ids = None if site_admin else _led_team_member_ids(db, admin)
+    scope_team_ids = None if site_admin else _led_team_ids(db, admin)
+
+    def survey_q():
+        q = db.query(Survey).join(User, Survey.user_id == User.id).filter(User.site_id == sid)
+        if scope_ids is not None:
+            q = q.filter(Survey.user_id.in_(scope_ids or {-1}))
+        return q
+
     now = utcnow().replace(tzinfo=None)
-    avg_rating = (
-        db.query(func.avg(Survey.rating))
-        .join(User, Survey.user_id == User.id)
-        .filter(User.site_id == sid)
-        .scalar()
-    )
+    avg_rating = survey_q().with_entities(func.avg(Survey.rating)).scalar()
     # 直近14日の日別セッション数
     since = now - timedelta(days=13)
     daily_rows = dict(
-        db.query(func.date(Survey.created_at), func.count(Survey.id))
-        .join(User, Survey.user_id == User.id)
-        .filter(User.site_id == sid, Survey.created_at >= since.replace(hour=0, minute=0, second=0))
+        survey_q()
+        .with_entities(func.date(Survey.created_at), func.count(Survey.id))
+        .filter(Survey.created_at >= since.replace(hour=0, minute=0, second=0))
         .group_by(func.date(Survey.created_at))
         .all()
     )
@@ -2064,9 +2106,12 @@ def admin_report(admin: User = Depends(site_admin_user), db: Session = Depends(g
     for i in range(13, -1, -1):
         d = (now - timedelta(days=i)).date().isoformat()
         daily.append({"date": d, "count": daily_rows.get(d, 0)})
-    # チーム別
+    # チーム別(リーダーは率いるチームのみ)
+    team_q = db.query(Team).filter(Team.site_id == sid)
+    if scope_team_ids is not None:
+        team_q = team_q.filter(Team.id.in_(scope_team_ids or {-1}))
     teams = []
-    for team in db.query(Team).filter(Team.site_id == sid).order_by(Team.id).all():
+    for team in team_q.order_by(Team.id).all():
         member_ids = [
             m.user_id for m in db.query(TeamMember).filter(TeamMember.team_id == team.id).all()
         ]
@@ -2074,14 +2119,18 @@ def admin_report(admin: User = Depends(site_admin_user), db: Session = Depends(g
             db.query(Survey).filter(Survey.user_id.in_(member_ids)).count() if member_ids else 0
         )
         teams.append({"name": team.name, "members": len(member_ids), "sessions": sessions})
+
+    total_users = (len(scope_ids) if scope_ids is not None
+                   else db.query(User).filter(User.site_id == sid).count())
     return {
-        "total_users": db.query(User).filter(User.site_id == sid).count(),
-        "total_sessions": site_surveys.count(),
-        "sessions_7d": site_surveys.filter(Survey.created_at >= now - timedelta(days=7)).count(),
-        "sessions_30d": site_surveys.filter(Survey.created_at >= now - timedelta(days=30)).count(),
+        "total_users": total_users,
+        "total_sessions": survey_q().count(),
+        "sessions_7d": survey_q().filter(Survey.created_at >= now - timedelta(days=7)).count(),
+        "sessions_30d": survey_q().filter(Survey.created_at >= now - timedelta(days=30)).count(),
         "avg_rating": round(avg_rating, 2) if avg_rating is not None else None,
         "daily": daily,
         "teams": teams,
+        "scoped": not site_admin,  # リーダーは管理対象のみのレポート
     }
 
 
@@ -2398,10 +2447,22 @@ def admin_put_settings(
 @app.post("/api/admin/announcements", status_code=201)
 def admin_create_announcement(
     body: AnnouncementIn,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(admin_or_leader_user),
     db: Session = Depends(get_db),
 ):
-    ann = Announcement(site_id=admin.site_id, title=body.title, body=body.body)
+    """お知らせを投稿する。team_id指定=チーム限定 / 未指定=サイト全体。
+    チームリーダーは自分が率いるチーム限定のみ投稿できる(サイト全体はサイト管理者のみ)"""
+    if body.team_id:
+        team = db.get(Team, body.team_id)
+        if team is None or team.site_id != admin.site_id:
+            raise HTTPException(status_code=404, detail="チームが存在しません")
+        if not _is_site_admin(admin) and body.team_id not in _led_team_ids(db, admin):
+            raise HTTPException(status_code=403, detail="このチームのリーダーではありません")
+    else:
+        # サイト全体への投稿はサイト管理者のみ
+        if not _is_site_admin(admin):
+            raise HTTPException(status_code=403, detail="サイト全体のお知らせはサイト管理者のみ投稿できます")
+    ann = Announcement(site_id=admin.site_id, title=body.title, body=body.body, team_id=body.team_id)
     db.add(ann)
     audit(db, admin, "announcement_create", body.title)
     db.commit()
@@ -2411,12 +2472,16 @@ def admin_create_announcement(
 @app.delete("/api/admin/announcements/{ann_id}")
 def admin_delete_announcement(
     ann_id: int,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(admin_or_leader_user),
     db: Session = Depends(get_db),
 ):
     ann = db.get(Announcement, ann_id)
     if ann is None or ann.site_id != admin.site_id:
         raise HTTPException(status_code=404, detail="お知らせが存在しません")
+    # リーダーは自分が率いるチーム限定のお知らせのみ削除できる
+    if not _is_site_admin(admin):
+        if ann.team_id is None or ann.team_id not in _led_team_ids(db, admin):
+            raise HTTPException(status_code=403, detail="このお知らせを削除する権限がありません")
     db.delete(ann)
     audit(db, admin, "announcement_delete", ann.title)
     db.commit()
@@ -2424,8 +2489,9 @@ def admin_delete_announcement(
 
 
 @app.get("/api/admin/teams")
-def admin_list_teams(admin: User = Depends(site_admin_user), db: Session = Depends(get_db)):
-    """自サイトのチーム一覧(メンバー数・リーダー名つき)"""
+def admin_list_teams(admin: User = Depends(admin_or_leader_user), db: Session = Depends(get_db)):
+    """チーム一覧(メンバー数・リーダー名つき)。サイト管理者は自サイト全チーム、
+    チームリーダーは自分が率いるチームのみ"""
     from sqlalchemy import func
 
     counts = dict(
@@ -2441,7 +2507,10 @@ def admin_list_teams(admin: User = Depends(site_admin_user), db: Session = Depen
         .all()
     ):
         leaders.setdefault(m.team_id, []).append(dn or name)
-    rows = db.query(Team).filter(Team.site_id == admin.site_id).order_by(Team.id).all()
+    q = db.query(Team).filter(Team.site_id == admin.site_id)
+    if not _is_site_admin(admin):
+        q = q.filter(Team.id.in_(_led_team_ids(db, admin) or {-1}))
+    rows = q.order_by(Team.id).all()
     return [
         {
             "id": t.id,

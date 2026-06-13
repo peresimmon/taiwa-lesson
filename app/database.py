@@ -93,6 +93,8 @@ class Announcement(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    # NULL=サイト全体に表示 / 指定=そのチームのメンバーにだけ表示
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(200))
     body: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -319,6 +321,8 @@ def _migrate() -> None:
         ann_cols = cols(conn, "announcements")
         if ann_cols and "site_id" not in ann_cols:
             conn.execute(text("ALTER TABLE announcements ADD COLUMN site_id INTEGER NOT NULL DEFAULT 0"))
+        if ann_cols and "team_id" not in ann_cols:
+            conn.execute(text("ALTER TABLE announcements ADD COLUMN team_id INTEGER"))
         for table in ("events", "posts"):
             tcols = cols(conn, table)
             if tcols and "team_id" not in tcols:
