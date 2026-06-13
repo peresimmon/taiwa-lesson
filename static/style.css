@@ -928,6 +928,18 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .theme-swatch span:first-child { margin-left: 0; }
 
 @media (max-width: 560px) {
+  /* ヘッダー: 管理画面/システム管理/開発者ボタンが多くても崩れないよう、
+     ユーザー情報を2行目に折り返し、ボタンを小さくする */
+  header { flex-wrap: wrap; padding: 10px 14px; gap: 6px 8px; }
+  header h1 { font-size: 1rem; }
+  header h1 small { display: none; }  /* 狭い画面ではローマ字サブタイトルを省略 */
+  #user-info { width: 100%; justify-content: flex-end; flex-wrap: wrap; gap: 6px; font-size: 0.8rem; }
+  #btn-admin, .sysadmin-btn, .dev-btn { padding: 4px 10px; font-size: 0.72rem; }
+  .user-name-btn {
+    padding: 5px 10px; font-size: 0.8rem;
+    max-width: 48vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
   .card { padding: 22px 18px; }
   main { margin-top: 14px; }
   .hero { flex-direction: column; align-items: stretch; }

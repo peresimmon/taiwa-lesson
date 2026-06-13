@@ -1308,6 +1308,40 @@ def test_token_binding(users):
     check("token_version空(旧トークン)は401", r.status_code == 401, r.text)
 
 
+def test_user_theme(admin_headers):
+    print("[22] テーマはユーザーに紐づく")
+    suffix = secrets.token_hex(3)
+    # 新規ユーザーは standard
+    reg = requests.post(f"{BASE}/api/register",
+                        json={"username": f"theme_{suffix}", "password": "pass123"}).json()
+    check("登録レスポンスにthemeが入る(既定standard)", reg.get("theme") == "standard", reg)
+    h = {"Authorization": f"Bearer {reg['token']}"}
+    check("meのthemeもstandard", requests.get(f"{BASE}/api/me", headers=h).json().get("theme") == "standard")
+
+    # テーマを変更 → 保存される
+    r = requests.put(f"{BASE}/api/me", headers=h, json={"theme": "dark"})
+    check("テーマ変更", r.status_code == 200 and r.json()["theme"] == "dark", r.text)
+    check("再取得でdarkが残る", requests.get(f"{BASE}/api/me", headers=h).json()["theme"] == "dark")
+    # 再ログインでもテーマが返る(ユーザーに紐づく)
+    again = requests.post(f"{BASE}/api/login",
+                          json={"username": f"theme_{suffix}", "password": "pass123"}).json()
+    check("再ログインのトークンにdarkが入る", again.get("theme") == "dark", again)
+
+    # 別ユーザーは影響を受けず standard のまま
+    reg2 = requests.post(f"{BASE}/api/register",
+                         json={"username": f"theme2_{suffix}", "password": "pass123"}).json()
+    check("別ユーザーは他人のテーマを引き継がない", reg2.get("theme") == "standard", reg2)
+
+    # 不正なテーマは422
+    r = requests.put(f"{BASE}/api/me", headers=h, json={"theme": "neon"})
+    check("不正なテーマは422", r.status_code == 422, r.text)
+
+    # 後始末
+    for u in requests.get(f"{BASE}/api/admin/users", headers=admin_headers).json():
+        if u["username"].startswith(("theme_", "theme2_")):
+            requests.delete(f"{BASE}/api/admin/users/{u['id']}", headers=admin_headers)
+
+
 def test_dev_mode(users, admin_headers):
     print("[20] 開発者モード(DBブラウザ)")
     h0 = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1442,6 +1476,7 @@ async def main():
     test_recurring_events(users, admin_headers)
     test_dev_mode(users, admin_headers)
     test_token_binding(users)
+    test_user_theme(admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

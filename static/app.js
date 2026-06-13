@@ -22,26 +22,34 @@ const THEMES = [
   { id: "lavender", name: "ラベンダー", swatch: ["#6b5ca5", "#d2618d", "#ece9f6"] },
 ];
 /**
- * 現在適用中のテーマID(localStorage `vm_theme` に永続化)。未知の値はstandardに丸める。
+ * 現在適用中のテーマID。テーマは**ユーザーに紐づく**(サーバーの users.theme が真実)。
+ * localStorage `vm_theme` はログイン中のちらつき防止キャッシュとしてのみ使い、
+ * ログアウト時に消す。未ログイン(ログイン画面)では必ず standard を表示する。
  * @type {string}
  */
-let currentTheme = localStorage.getItem("vm_theme") || "standard";
-if (!THEMES.some((t) => t.id === currentTheme)) currentTheme = "standard";
+let currentTheme = "standard";
 
-function applyTheme(id) {
+/**
+ * テーマを適用する。cache=true のときだけ localStorage に控える(ログイン中の再読込用)。
+ * @param {string} id テーマID
+ * @param {boolean} [cache=true] localStorageに保存するか
+ */
+function applyTheme(id, cache = true) {
+  if (!THEMES.some((t) => t.id === id)) id = "standard";
   currentTheme = id;
   if (id === "standard") {
     document.documentElement.removeAttribute("data-theme");
   } else {
     document.documentElement.setAttribute("data-theme", id);
   }
-  localStorage.setItem("vm_theme", id);
+  if (cache) localStorage.setItem("vm_theme", id);
   // PWAのステータスバー色もテーマのヘッダー色に追従させる
   const headerBg = getComputedStyle(document.documentElement).getPropertyValue("--header-bg").trim();
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme && headerBg) metaTheme.content = headerBg;
 }
-applyTheme(currentTheme);
+// 初期適用: ログイン中ならキャッシュのテーマ(ちらつき防止)、未ログインは必ずstandard
+applyTheme(localStorage.getItem("vm_token") ? (localStorage.getItem("vm_theme") || "standard") : "standard", false);
 
 // ---- 状態 -------------------------------------------------------------------
 /** JWT認証トークン(localStorage `vm_token`)。未ログイン時は空文字。 @type {string} */
@@ -161,7 +169,7 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName, newIsMainSite) {
+function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName, newIsMainSite, newTheme) {
   token = newToken;
   username = newUsername;
   displayName = newDisplayName || newUsername;
@@ -169,6 +177,8 @@ function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisp
   isMainSite = !!newIsMainSite;
   localStorage.setItem("vm_token", token);
   localStorage.setItem("vm_username", username);
+  // テーマはユーザーに紐づく。ログインしたユーザーのテーマを適用してキャッシュする
+  applyTheme(newTheme || "standard");
   if (mustChangePassword) {
     // 初期パスワードのままなので、変更が済むまで他の画面には進ませない
     $("pw-error").textContent = "";
@@ -222,6 +232,9 @@ function logout() {
   closeUserMenu();
   localStorage.removeItem("vm_token");
   localStorage.removeItem("vm_username");
+  localStorage.removeItem("vm_theme");
+  // ログイン画面は必ずスタンダードで表示する
+  applyTheme("standard", false);
   cleanupCall();
   if (ws) { ws.close(); ws = null; }
   $("user-info").classList.add("hidden");
@@ -288,7 +301,7 @@ $("auth-form").onsubmit = async (e) => {
     };
     if (IS_SUB_LOGIN) body.site = $("auth-site").value.trim();
     const data = await api(`/api/${authMode === "login" ? "login" : "register"}`, "POST", body);
-    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name, data.is_main_site);
+    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name, data.is_main_site, data.theme);
   } catch (err) {
     $("auth-error").textContent = err.message;
   }
@@ -306,7 +319,7 @@ $("password-form").onsubmit = async (e) => {
     $("pw-current").value = "";
     $("pw-new").value = "";
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username, me.is_main_site);
+    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username, me.is_main_site, me.theme);
   } catch (err) {
     $("pw-error").textContent = err.message;
   }
@@ -4123,9 +4136,16 @@ function renderThemeGrid() {
       </button>`
   ).join("");
   $("theme-grid").querySelectorAll("[data-theme-id]").forEach((btn) => {
-    btn.onclick = () => {
-      applyTheme(btn.dataset.themeId);
+    btn.onclick = async () => {
+      const id = btn.dataset.themeId;
+      applyTheme(id);          // 先に見た目を反映(体感を良くする)
       renderThemeGrid();
+      try {
+        // テーマはユーザーに紐づくのでサーバーに保存する
+        await api("/api/me", "PUT", { theme: id });
+      } catch (err) {
+        $("profile-error").textContent = err.message;
+      }
     };
   });
 }
@@ -4239,7 +4259,7 @@ if ("serviceWorker" in navigator) {
   }
   try {
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username, me.is_main_site);
+    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username, me.is_main_site, me.theme);
   } catch {
     logout();
   }

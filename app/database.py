@@ -66,6 +66,8 @@ class User(Base):
     token_version: Mapped[str] = mapped_column(
         String(32), default=lambda: secrets.token_hex(8)
     )
+    # 配色テーマ。ユーザーに紐づく(standard/dark/sakura/forest/lavender)
+    theme: Mapped[str] = mapped_column(String(20), default="standard")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -344,6 +346,8 @@ def _migrate() -> None:
                 "UPDATE users SET token_version = lower(hex(randomblob(8)))"
                 " WHERE token_version IS NULL"
             ))
+        if user_cols and "theme" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN theme VARCHAR(20) NOT NULL DEFAULT 'standard'"))
         if user_cols and "is_active" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
         sv_cols = cols(conn, "surveys")

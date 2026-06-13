@@ -7,9 +7,11 @@
   <!-- PWA -->
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#3d5a80">
-  <!-- 保存済みテーマをCSS読込前に適用(ちらつき防止)。一覧は app.js の THEMES 参照 -->
+  <!-- ログイン中のみ、保存済みテーマをCSS読込前に適用(ちらつき防止)。
+       未ログイン(ログイン画面)は必ずスタンダードで表示する。一覧は app.js の THEMES 参照 -->
   <script>
     (function () {
+      if (!localStorage.getItem("vm_token")) return; // 未ログインはスタンダード
       var t = localStorage.getItem("vm_theme");
       if (t && t !== "standard") document.documentElement.setAttribute("data-theme", t);
     })();

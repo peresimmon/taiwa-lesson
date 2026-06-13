@@ -305,6 +305,7 @@ class TokenOut(BaseModel):
     site: str = MAIN_SITE_SLUG
     site_name: str = ""
     is_main_site: bool = False  # メインサイトか(開発者モードの表示判定に使う)
+    theme: str = "standard"     # ユーザーに紐づく配色テーマ
     must_change_password: bool = False
 
 
@@ -382,6 +383,7 @@ class MeUpdateIn(BaseModel):
     """自分の設定変更。送られてきたフィールドのみ更新する"""
     email: str | None = Field(default=None, max_length=120)
     display_name: str | None = Field(default=None, max_length=50)  # 空文字でusernameに戻す
+    theme: str | None = Field(default=None, pattern=r"^(standard|dark|sakura|forest|lavender)$")
 
 
 class TeamMemberIn(BaseModel):
@@ -572,6 +574,7 @@ def token_response(user: User, site: Site) -> TokenOut:
         site=site.slug,
         site_name=site.name,
         is_main_site=site.is_main,
+        theme=user.theme or "standard",
         must_change_password=user.must_change_password,
     )
 
@@ -636,6 +639,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "site": site.slug if site else "",
         "site_name": site.name if site else "",
         "is_main_site": bool(site and site.is_main),
+        "theme": user.theme or "standard",
         "must_change_password": user.must_change_password,
     }
 
@@ -646,16 +650,19 @@ def update_me(
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
-    """自分の設定変更(メールアドレス・表示名)。送られてきた項目のみ更新する"""
+    """自分の設定変更(メールアドレス・表示名・テーマ)。送られてきた項目のみ更新する"""
     if "email" in body.model_fields_set:
         user.email = (body.email or "").strip() or None
     if "display_name" in body.model_fields_set:
         user.display_name = (body.display_name or "").strip() or None
+    if "theme" in body.model_fields_set and body.theme:
+        user.theme = body.theme
     db.commit()
     return {
         "ok": True,
         "email": user.email or "",
         "display_name": user.display_name or "",
+        "theme": user.theme or "standard",
     }
 
 
