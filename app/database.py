@@ -43,12 +43,14 @@ class Site(Base):
 
 
 class User(Base):
+    """サイトに所属するユーザー。ログインID(username)・表示名・権限ロールを持つ"""
+
     __tablename__ = "users"
     # ユーザー名はサイト内で一意(別サイトには同名ユーザーが存在できる)
     __table_args__ = (UniqueConstraint("site_id", "username", name="uq_users_site_username"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)  # 所属サイト
     username: Mapped[str] = mapped_column(String(50), index=True)  # ログインID(変更不可)
     display_name: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 表示名(未設定はusername)
     password_hash: Mapped[str] = mapped_column(String(255))
@@ -62,13 +64,15 @@ class User(Base):
 
 
 class Survey(Base):
+    """セッション後アンケートの回答(1セッションにつき各参加者1件)"""
+
     __tablename__ = "surveys"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    room_id: Mapped[str] = mapped_column(String(64), index=True)
+    room_id: Mapped[str] = mapped_column(String(64), index=True)  # 通話ID(CallPair.call_idと対応)
     rating: Mapped[int] = mapped_column(Integer)  # 1〜5
-    talk_again: Mapped[bool] = mapped_column(Boolean, default=False)
+    talk_again: Mapped[bool] = mapped_column(Boolean, default=False)  # 「また話したい」(再マッチ優先に使う)
     comment: Mapped[str] = mapped_column(Text, default="")
     answers: Mapped[str] = mapped_column(Text, default="")  # 複数設問の回答(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

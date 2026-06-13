@@ -2,10 +2,18 @@
  * 画面遷移: auth → lobby → waiting → consent → call → survey → done → lobby
  */
 
-const API_BASE = ""; // 同一オリジンで配信。別ホストに置く場合はここを変更
+/**
+ * APIのベースURL。空文字なら同一オリジンに配信。別ホストへ置く場合のみ変更する。
+ * @type {string}
+ */
+const API_BASE = "";
 
 // ---- テーマ -----------------------------------------------------------------
-// 配色の実体は style.css の [data-theme=...]。swatch はマイページの見本表示用
+/**
+ * 選択できる配色テーマの定義一覧。配色の実体は style.css の `[data-theme=...]` 側にあり、
+ * ここの `swatch`(代表3色)はマイページのテーマ選択ボタンの見本表示にだけ使う。
+ * @type {Array<{id: string, name: string, swatch: string[]}>}
+ */
 const THEMES = [
   { id: "standard", name: "スタンダード", swatch: ["#3d5a80", "#ee6c4d", "#fafaf8"] },
   { id: "dark", name: "ダーク", swatch: ["#8fb4e3", "#f08a64", "#14181f"] },
@@ -13,6 +21,10 @@ const THEMES = [
   { id: "forest", name: "わかば", swatch: ["#3f7252", "#d98e32", "#e5f0e7"] },
   { id: "lavender", name: "ラベンダー", swatch: ["#6b5ca5", "#d2618d", "#ece9f6"] },
 ];
+/**
+ * 現在適用中のテーマID(localStorage `vm_theme` に永続化)。未知の値はstandardに丸める。
+ * @type {string}
+ */
 let currentTheme = localStorage.getItem("vm_theme") || "standard";
 if (!THEMES.some((t) => t.id === currentTheme)) currentTheme = "standard";
 
@@ -32,13 +44,22 @@ function applyTheme(id) {
 applyTheme(currentTheme);
 
 // ---- 状態 -------------------------------------------------------------------
+/** JWT認証トークン(localStorage `vm_token`)。未ログイン時は空文字。 @type {string} */
 let token = localStorage.getItem("vm_token") || "";
+/** ログインID(localStorage `vm_username`)。 @type {string} */
 let username = localStorage.getItem("vm_username") || "";
-let displayName = "";        // 表示名(未設定時はusernameと同じ)
-let userRole = "user";       // "user" | "moderator" | "site_admin" | "system_admin"
-let sessionMinutes = 10;     // サイト設定から取得するセッション時間(分)
+/** 表示名。未設定のときはusernameと同じ値を入れる。 @type {string} */
+let displayName = "";
+/** 権限ロール。`"user" | "moderator" | "site_admin" | "system_admin"`。 @type {string} */
+let userRole = "user";
+/** サイト設定から取得するセッション時間(分)。 @type {number} */
+let sessionMinutes = 10;
 
-// サイト設定(/api/config)。ダッシュボード表示時に取得して反映する
+/**
+ * サイト設定(`GET /api/config`)。ダッシュボード表示時に取得して反映する。
+ * 通信前に使う安全側の初期値を入れてある。
+ * @type {Object}
+ */
 let siteConfig = {
   role_matching: true,
   anonymous_mode: true,
@@ -47,37 +68,61 @@ let siteConfig = {
   modes: { toon: true, real: true, still: true, camera: false },
 };
 
-// "/login" はサブサイト(企業向け)のログインページ。サイトIDの入力が必要で自己登録は不可
+/** `/login` はサブサイト(企業向け)のログインページか。サイトID入力が必要で自己登録は不可。 @type {boolean} */
 const IS_SUB_LOGIN = location.pathname === "/login";
+/** マッチング・シグナリング用のWebSocket。未接続時はnull。 @type {WebSocket|null} */
 let ws = null;
-let pc = null;            // RTCPeerConnection
+/** WebRTCのピア接続。通話していないときはnull。 @type {RTCPeerConnection|null} */
+let pc = null;
+/** 自分のカメラ・マイクのMediaStream(送信用)。 @type {MediaStream|null} */
 let localStream = null;
+/** 現在の通話のセッションID(WebSocketのroom_id)。 @type {string} */
 let currentRoomId = "";
+/** 自分がWebRTCのoffer側(先にマッチした側)か。 @type {boolean} */
 let isInitiator = false;
-let pendingCandidates = []; // remoteDescription設定前に届いたICE候補
+/** remoteDescription設定前に届いたICE候補の保留キュー。 @type {RTCIceCandidateInit[]} */
+let pendingCandidates = [];
+/** セッション残り時間のカウントダウン用 setInterval ID。 @type {number|null} */
 let sessionTimer = null;
-let sessionSeconds = 600; // 10分 = 600秒
-let selectedRole = "";   // ダッシュボードで選んだ役割 ("speaker" | "listener")
-let myRole = "";         // 現在のセッションでの役割
-let myNickname = "";     // セッション限定のランダムな呼び名
+/** セッションの残り秒数(既定10分=600秒)。 @type {number} */
+let sessionSeconds = 600;
+/** ダッシュボードで選んだ役割。`"speaker" | "listener"`(役割なしは空)。 @type {string} */
+let selectedRole = "";
+/** 現在のセッションでの自分の役割。 @type {string} */
+let myRole = "";
+/** セッション限定のランダムな自分の呼び名。 @type {string} */
+let myNickname = "";
+/** 現在のセッションでの相手の役割。 @type {string} */
 let peerRole = "";
+/** 現在のセッションでの相手の呼び名。 @type {string} */
 let peerNickname = "";
-let lastCallId = "";     // 直近の通話ID(通報・ブロックで使う)
-let callTopic = "";      // 話題カード
-let sessionRound = 1;    // 役割交代つきセッションの回数(1→2)
-let chatLog = [];        // セッション内チャット(終了画面で破棄)
+/** 直近の通話ID。通報・ブロックの対象特定に使う。 @type {string} */
+let lastCallId = "";
+/** 現在のセッションの話題カード。 @type {string} */
+let callTopic = "";
+/** 役割交代つきセッションの回数(1→2)。 @type {number} */
+let sessionRound = 1;
+/** セッション内チャットのログ。終了画面で保存を促してから破棄する。 @type {Array<{time: string, sender: string, text: string}>} */
+let chatLog = [];
+/** マイクをミュート中か。 @type {boolean} */
 let micMuted = false;
+/** 映像をオフ中か。 @type {boolean} */
 let camOff = false;
-let screenStream = null; // 画面共有中のストリーム
+/** 画面共有中のMediaStream。共有していないときはnull。 @type {MediaStream|null} */
+let screenStream = null;
 
+/** WebRTCのICE設定(STUNサーバー)。本番ではTURNの追加が必要(docs/TODO.md)。 @type {RTCConfiguration} */
 const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
 // ---- ユーティリティ -----------------------------------------------------------
+/** `document.getElementById` の短縮。 @type {(id: string) => HTMLElement} */
 const $ = (id) => document.getElementById(id);
 
+/** 役割コードを日本語ラベルに変換する。 @type {(role: string) => string} */
 const roleLabel = (role) => (role === "speaker" ? "話し手" : role === "listener" ? "聞き手" : "");
+/** 役割を「（話し手）」のような括弧つき表記にする(役割なしは空)。 @type {(role: string) => string} */
 const roleParen = (role) => (role && role !== "any" ? `（${roleLabel(role)}）` : "");
 
 /* アバターの色分けに使う役割。役割なしのときは呼び名から安定したランダム色 */
@@ -205,6 +250,7 @@ $("um-profile").onclick = () => {
 $("um-logout").onclick = () => logout();
 
 // ---- 認証画面 -----------------------------------------------------------------
+/** 認証画面の表示モード。`"login" | "register"`。 @type {string} */
 let authMode = "login";
 
 // サブサイトのログインページ: サイトID入力を表示し、自己登録タブを隠す
@@ -461,22 +507,33 @@ $("btn-consent-ng").onclick = () => {
 // ---- アバター(MediaPipe顔トラッキング) ------------------------------------
 // カメラの実映像は顔の動きの解析だけに使い、ネットワークには一切流さない。
 // 相手にはCanvasに描いたアバターを captureStream() で送る。
+/** 読み込むMediaPipe tasks-visionのバージョン(CDN)。 @type {string} */
 const MEDIAPIPE_VERSION = "0.10.14";
+/** MediaPipeのFaceLandmarkerインスタンス。未ロード時はnull。 @type {object|null} */
 let faceLandmarker = null;
+/** FaceLandmarkerの読み込みPromise(多重ロード防止)。 @type {Promise|null} */
 let landmarkerPromise = null;
-let rawStream = null;     // カメラ・マイクの生ストリーム(端末内に閉じる)
+/** カメラ・マイクの生ストリーム。端末内に閉じ、ネットワークには流さない。 @type {MediaStream|null} */
+let rawStream = null;
+/** アバター描画先のCanvas(captureStreamで相手へ送る)。 @type {HTMLCanvasElement|null} */
 let avatarCanvas = null;
+/** avatarCanvasの2D描画コンテキスト。 @type {CanvasRenderingContext2D|null} */
 let avatarCtx = null;
+/** アバター描画ループの requestAnimationFrame ID。 @type {number|null} */
 let avatarLoop = null;
+/** 口パク判定用のAudioContext。 @type {AudioContext|null} */
 let audioCtxRef = null;
-let audioAnalyser = null; // トラッキング不可時のフォールバック(声で口を動かす)
+/** 顔トラッキング不可時のフォールバック用アナライザ(声の大きさで口を動かす)。 @type {AnalyserNode|null} */
+let audioAnalyser = null;
 
-// 表情の現在値と目標値。毎フレーム補間してなめらかに動かす
+/** 表情パラメータの現在値。毎フレーム目標値へ補間してなめらかに動かす。 @type {Object} */
 const faceCur = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
+/** 表情パラメータの目標値(最新のトラッキング結果)。 @type {Object} */
 const faceTgt = { x: 0, y: 0, roll: 0, pitch: 0, blinkL: 0, blinkR: 0, jaw: 0, smile: 0, brow: 0 };
 
-// うなずきの中立姿勢キャリブレーション(カメラ位置による角度オフセット対策)
+/** うなずき検出の中立姿勢の基準ピッチ。キャリブレーション前はnull。 @type {number|null} */
 let pitchBase = null;
+/** 中立姿勢キャリブレーションのために集めたフレーム数。 @type {number} */
 let pitchFrames = 0;
 
 function loadFaceLandmarker() {
@@ -653,7 +710,12 @@ function updateFaceFromResult(res) {
 }
 
 // ---- アバターの種類 -----------------------------------------------------------
-// mode: "toon"=デフォルメ(2D Canvas) / "real"=リアル(3D VRM)
+/**
+ * 選べるアバターの定義。`mode` は表示方式:
+ * `"toon"`=デフォルメ(2D Canvas) / `"real"`=リアル(3D VRM) / `"still"`=静止画 / `"camera"`=実映像。
+ * realのものは `url`(VRMモデル)と `thumb`(サムネ)を持つ。
+ * @type {Object<string, {label: string, mode: string, url?: string, thumb?: string}>}
+ */
 const AVATARS = {
   maru: { label: "まる", mode: "toon" },
   neko: { label: "ねこ", mode: "toon" },
@@ -668,6 +730,7 @@ const AVATARS = {
   still: { label: "静止画", mode: "still" },
   camera: { label: "実映像", mode: "camera" },
 };
+/** 選択中のアバターの種類キー(localStorage `vm_avatar`)。未知の値はmaruに丸める。 @type {string} */
 let avatarType = localStorage.getItem("vm_avatar") || "maru";
 if (!AVATARS[avatarType]) avatarType = "maru";
 
@@ -703,10 +766,14 @@ function drawAvatar() {
 }
 
 // ---- リアルモード(3D VRMアバター) ----------------------------------------------
-let vrmCtx = null;        // 共有のレンダラー類 { THREE, renderer, scene, camera, clock, canvas }
+/** 共有のthree.jsレンダラー一式 `{ THREE, renderer, scene, camera, clock, canvas }`。未初期化はnull。 @type {object|null} */
+let vrmCtx = null;
+/** vrmCtxの初期化Promise(多重初期化防止)。 @type {Promise|null} */
 let vrmCtxPromise = null;
-const vrmModels = {};     // type -> Promise<{ vrm } | null> モデルキャッシュ
-let vrmActive = null;     // { model, type } 現在シーンに載っているモデル
+/** VRMモデルのキャッシュ。`type` → `Promise<{ vrm } | null>`。 @type {Object<string, Promise>} */
+const vrmModels = {};
+/** いま3Dシーンに載っているモデル `{ model, type }`。未ロード時はnull。 @type {object|null} */
+let vrmActive = null;
 
 function loadVRMContext() {
   if (!vrmCtxPromise) {
@@ -792,6 +859,7 @@ async function activateVRM(type) {
   return vrmActive;
 }
 
+/** 値を0〜1の範囲に収める。 @type {(v: number) => number} */
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 function updateVRMFrame() {
@@ -1604,8 +1672,11 @@ $("btn-back-lobby").onclick = () => {
 };
 
 // ---- ダッシュボード ---------------------------------------------------------
+/** カレンダーで表示中の年(西暦)。 @type {number} */
 let calYear = new Date().getFullYear();
-let calMonth = new Date().getMonth(); // 0始まり
+/** カレンダーで表示中の月。0始まり(0=1月)。 @type {number} */
+let calMonth = new Date().getMonth();
+/** 表示中の月のイベント一覧(`GET /api/events` の結果)。 @type {Array<Object>} */
 let monthEvents = [];
 
 async function loadDashboard() {
@@ -1802,10 +1873,15 @@ function renderHistory(items) {
 }
 
 // ---- チーム -------------------------------------------------------------------
+/** 自分の所属チーム一覧(`GET /api/teams`)。ルーム/イベントの公開範囲選択にも使う。 @type {Array<Object>} */
 let myTeams = [];
-let postScope = "";   // ""=サイト全体 / チームID文字列
+/** 掲示板の表示スコープ。`""`=サイト全体 / チームIDの文字列。 @type {string} */
+let postScope = "";
+/** カレンダーの表示スコープ。`""`=サイト全体 / チームIDの文字列。 @type {string} */
 let eventScope = "";
+/** 未使用(チーム画面の旧実装の名残)。現在は teamScreen 側で管理している。 @type {number|null} */
 let currentTeamId = null;
+/** 未使用(チーム画面の旧実装の名残)。 @type {boolean} */
 let currentTeamLeader = false;
 
 function fetchPosts() {
@@ -1854,7 +1930,8 @@ function renderTeamPanel() {
 }
 
 // ---- チーム画面(メンバー・リーダー用。管理画面に入れないリーダーの導線) -----------
-let teamScreen = null; // 表示中のチーム詳細
+/** 表示中のチーム画面の詳細データ(`GET /api/teams/{id}`)。未表示時はnull。 @type {object|null} */
+let teamScreen = null;
 
 async function showTeamScreen(teamId) {
   $("team-screen-error").textContent = "";
@@ -2041,9 +2118,12 @@ $("btn-team-leave").onclick = async () => {
 };
 
 // ---- ルーム -------------------------------------------------------------------
+/** 見えるルーム一覧(`GET /api/rooms`)。 @type {Array<Object>} */
 let myRooms = [];
-let activeRoomConfig = null; // 参加中ルームの有効設定(セッション時間・役割・表示モード)
-let editingRoomId = null;    // 編集中のルームID(nullなら新規作成)
+/** 参加中ルームの有効設定(セッション時間・役割・表示モード)。ロビー通話時はnull。 @type {object|null} */
+let activeRoomConfig = null;
+/** ルーム編集フォームで編集中のルームID。新規作成時はnull。 @type {number|null} */
+let editingRoomId = null;
 
 /* ルーム参加中はルームの表示モード設定がサイト設定より優先される */
 function effectiveModes() {
@@ -2614,8 +2694,10 @@ async function showAdmin() {
   }
 }
 
+/** 管理画面のユーザー一覧のキャッシュ(`GET /api/admin/users`)。 @type {Array<Object>} */
 let adminUsers = [];
-let adminUserSort = { key: "id", dir: 1 }; // dir: 1=昇順, -1=降順
+/** 管理画面ユーザー一覧の並び順。`dir` は 1=昇順 / -1=降順。 @type {{key: string, dir: number}} */
+let adminUserSort = { key: "id", dir: 1 };
 
 async function loadAdminUsers() {
   adminUsers = await api("/api/admin/users");
@@ -3023,6 +3105,7 @@ async function loadAdminReport() {
 }
 
 // --- 監査ログ ---
+/** 監査ログのaction(英字キー)を画面表示用の日本語ラベルに変換する辞書。 @type {Object<string, string>} */
 const auditLabels = {
   settings_update: "サイト設定変更",
   user_create: "ユーザー作成",
@@ -3372,8 +3455,11 @@ function playMatchSound() {
 }
 
 // ---- カメラ・マイク・アバターのテスト ----------------------------------------------
+/** デバイステスト画面で取得中のカメラ・マイクのMediaStream。 @type {MediaStream|null} */
 let testStream = null;
+/** デバイステストのアバタープレビュー描画ループのID。 @type {number|null} */
 let testLoopId = null;
+/** デバイステストのマイク音量メーター用AudioContext。 @type {AudioContext|null} */
 let testAudioCtx = null;
 
 function mediaConstraints() {
@@ -3490,6 +3576,7 @@ $("sel-mic").onchange = () => {
 $("btn-sysadmin").onclick = () => showSysadmin();
 $("btn-sysadmin-back").onclick = () => showLobby();
 
+/** 権限ロール(英字キー)を画面表示用の日本語ラベルに変換する辞書。 @type {Object<string, string>} */
 const roleLabels = {
   system_admin: "システム管理者",
   site_admin: "サイト管理者",
@@ -3520,9 +3607,13 @@ async function showSysadmin() {
   }
 }
 
-let sysSites = [];      // サイト一覧のキャッシュ
-let sysSite = null;     // 詳細表示中のサイト
-let sysSettings = null; // 詳細表示中のサイトの設定
+/** システム管理画面のサイト一覧のキャッシュ(`GET /api/sysadmin/sites`)。 @type {Array<Object>} */
+let sysSites = [];
+/** システム管理画面で詳細表示中のサイト。未選択時はnull。 @type {object|null} */
+let sysSite = null;
+/** 詳細表示中サイトの設定(`GET /api/sysadmin/sites/{id}/settings`)。 @type {object|null} */
+let sysSettings = null;
+/** サイト詳細の「設定確認」タブが編集モードか。 @type {boolean} */
 let sysSettingsEditing = false;
 
 async function loadSysSites() {
@@ -3673,7 +3764,12 @@ async function loadSysSiteUsers() {
   });
 }
 
-/* サイト設定の項目定義。読み取り表示と編集フォームの両方をここから生成する */
+/**
+ * サイト詳細「設定確認」タブの項目定義。セクションごとに項目を並べ、
+ * 読み取り表示と編集フォームの両方をこの定義から動的に生成する。
+ * `type` は `"text" | "bool" | "number" | "select" | "textarea"`。
+ * @type {Array<{section: string, items: Array<{key: string, label: string, type: string, options?: Array, min?: number, max?: number}>}>}
+ */
 const SETTING_FIELDS = [
   { section: "サイト全体", items: [
     { key: "site_name", label: "サイト名", type: "text" },

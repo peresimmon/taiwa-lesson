@@ -25,10 +25,10 @@ import secrets
 
 from fastapi import WebSocket
 
-ROLE_SPEAKER = "speaker"
-ROLE_LISTENER = "listener"
+ROLE_SPEAKER = "speaker"   # 話し手
+ROLE_LISTENER = "listener" # 聞き手
 ROLE_ANY = "any"  # 役割なしマッチング(サイト設定で役割マッチングを無効にした場合)
-ROLES = (ROLE_SPEAKER, ROLE_LISTENER, ROLE_ANY)
+ROLES = (ROLE_SPEAKER, ROLE_LISTENER, ROLE_ANY)  # join_queueで受け付ける役割の一覧
 
 # セッション内だけで使う呼び名の候補。本名・ユーザー名は相手に伝えない
 NICKNAMES = [
@@ -40,12 +40,14 @@ NICKNAMES = [
 
 
 class Client:
+    """1つのWebSocket接続(=ログイン中の1ユーザー)。待機〜通話中の状態を保持する"""
+
     def __init__(self, user_id: int, username: str, site_id: int, ws: WebSocket):
-        self.user_id = user_id
-        self.username = username
+        self.user_id = user_id            # ユーザーの内部ID
+        self.username = username          # 表示名(相手に見せる呼び名のベース)
         self.site_id = site_id            # マッチングは同一サイト内でのみ行う
-        self.ws = ws
-        self.room: "Room | None" = None
+        self.ws = ws                      # このクライアントのWebSocket
+        self.room: "Room | None" = None   # 参加中の通話ルーム(待機中・未通話はNone)
         self.role: str | None = None      # 待機〜セッション中の役割
         self.nickname: str | None = None  # セッション限定のランダムな呼び名
         self.anonymous = True             # False=実名(ユーザー名)で表示するサイト
@@ -63,12 +65,14 @@ class Client:
 
 
 class Room:
+    """マッチした2人の通話セッション(WebRTCのルーム)。1対1で固定"""
+
     def __init__(self, room_id: str, a: Client, b: Client):
-        self.id = room_id
-        self.members: dict[int, Client] = {a.user_id: a, b.user_id: b}
-        self.consents: set[int] = set()
-        self.started = False
-        self.speaker_topic = ""        # 話し手が同意画面で設定した話題
+        self.id = room_id                                  # セッションID(WebRTCのroom_id)
+        self.members: dict[int, Client] = {a.user_id: a, b.user_id: b}  # user_id -> 参加者
+        self.consents: set[int] = set()    # 同意済みユーザーID(2人そろうと通話開始)
+        self.started = False               # 通話が開始済みか
+        self.speaker_topic = ""            # 話し手が同意画面で設定した話題
         self.swap_requests: set[int] = set()  # 役割交代に同意したユーザー
 
     def peer_of(self, client: Client) -> Client | None:
@@ -79,11 +83,13 @@ class Room:
 
 
 class MatchingManager:
+    """全接続クライアントの待機列・マッチング・シグナリング中継を司る(プロセス内シングルトン)"""
+
     def __init__(self) -> None:
-        self.lock = asyncio.Lock()
+        self.lock = asyncio.Lock()  # 待機列・部屋の更新を直列化する排他ロック
         # (site_id, room_id, role) -> 待機中クライアント。サイト・ルームをまたいだマッチングはしない
         self.waiting: dict[tuple[int, int, str], list[Client]] = {}
-        self.clients: dict[int, Client] = {}
+        self.clients: dict[int, Client] = {}  # 接続中の全クライアント(user_id -> Client)
         self.on_match = None  # マッチ成立時のフック(通話ペアのDB記録に使う)
 
     def _queue(self, site_id: int, room_id: int, role: str) -> list[Client]:

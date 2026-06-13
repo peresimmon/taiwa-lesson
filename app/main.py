@@ -59,7 +59,7 @@ def _record_call_pair(a: Client, b: Client, call_id: str) -> None:
 manager.on_match = _record_call_pair
 
 MAIN_SITE_SLUG = "taiwa-lesson"  # メインサイトのサイトID(変更の可能性あり)
-SITE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,29}$")
+SITE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,29}$")  # サイトIDの許容形式(半角小文字英数とハイフン、2〜30文字)
 
 app = FastAPI(title="VideoMatch API")
 
@@ -267,27 +267,31 @@ def seed_initial_data() -> None:
 
 seed_initial_data()
 
-bearer_scheme = HTTPBearer()
+bearer_scheme = HTTPBearer()  # Authorizationヘッダー(Bearerトークン)の取り出し
 
 
-# --- スキーマ ----------------------------------------------------------------
+# --- スキーマ(リクエスト/レスポンスのボディ定義) -----------------------------------
 
 
 class AuthIn(BaseModel):
+    """登録・ログインの共通入力(ユーザー名+パスワード)"""
     username: str = Field(min_length=2, max_length=50)
     password: str = Field(min_length=6, max_length=128)
 
 
 class LoginIn(AuthIn):
+    """ログイン入力。AuthInにサブサイト指定を加えたもの"""
     site: str | None = None  # サブサイトのログインで指定。省略時はメインサイト
 
 
 class PasswordIn(BaseModel):
+    """パスワード変更の入力(現在のパスワード+新しいパスワード)"""
     current_password: str = Field(min_length=6, max_length=128)
     new_password: str = Field(min_length=6, max_length=128)
 
 
 class TokenOut(BaseModel):
+    """ログイン/登録の応答。トークンとログインユーザーの基本情報"""
     token: str
     username: str
     display_name: str = ""  # 表示名(未設定はusernameと同じ値)
@@ -298,6 +302,7 @@ class TokenOut(BaseModel):
 
 
 class SurveyIn(BaseModel):
+    """セッション後アンケートの入力"""
     room_id: str = Field(max_length=64)
     rating: int = Field(ge=1, le=5)
     talk_again: bool = False
@@ -306,24 +311,29 @@ class SurveyIn(BaseModel):
 
 
 class ReportIn(BaseModel):
+    """通話相手の通報の入力(対象の通話IDと理由)"""
     call_id: str = Field(min_length=1, max_length=64)
     reason: str = Field(min_length=1, max_length=500)
 
 
 class ReportStatusIn(BaseModel):
+    """通報の対応状態の更新(open/resolved)"""
     status: str = Field(pattern=r"^(open|resolved)$")
 
 
 class BlockIn(BaseModel):
+    """ブロックの入力(対象の通話ID)"""
     call_id: str = Field(min_length=1, max_length=64)
 
 
 class WarningIn(BaseModel):
+    """ユーザーへの警告文の発令"""
     user_id: int
     message: str = Field(min_length=1, max_length=500)
 
 
 class EventIn(BaseModel):
+    """イベント作成の入力(繰り返し設定を含む)"""
     title: str = Field(min_length=1, max_length=200)
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")  # "HH:MM"(任意)
@@ -335,6 +345,7 @@ class EventIn(BaseModel):
 
 
 class EventEditIn(BaseModel):
+    """イベント編集の入力。scope=one(その回だけ)/series(繰り返し全体)"""
     title: str = Field(min_length=1, max_length=200)
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")  # scope=oneのときのみ反映
     start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -344,15 +355,18 @@ class EventEditIn(BaseModel):
 
 
 class AttendanceIn(BaseModel):
+    """イベントの参加可否(RSVP)の入力"""
     status: str = Field(pattern=r"^(yes|no)$")  # 参加可否(RSVP)
 
 
 class PostIn(BaseModel):
+    """掲示板への投稿の入力"""
     body: str = Field(min_length=1, max_length=1000)
     team_id: int | None = None  # 指定するとチーム限定の投稿
 
 
 class TeamIn(BaseModel):
+    """チームの作成・設定変更の入力(名前・説明)"""
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
 
@@ -364,19 +378,23 @@ class MeUpdateIn(BaseModel):
 
 
 class TeamMemberIn(BaseModel):
+    """チームへのメンバー追加の入力"""
     username: str = Field(min_length=2, max_length=50)
     is_leader: bool = False  # サイト管理者の追加時のみ有効
 
 
 class LeaderIn(BaseModel):
+    """チームリーダーの任命/解除の入力"""
     is_leader: bool
 
 
 class RoleIn(BaseModel):
+    """ユーザーの権限ロール変更の入力"""
     role: str = Field(pattern=r"^(user|moderator|site_admin)$")
 
 
 class ActiveIn(BaseModel):
+    """ユーザーの有効化/無効化の入力"""
     is_active: bool
 
 
@@ -388,10 +406,12 @@ class UserEditIn(BaseModel):
 
 
 class SiteEditIn(BaseModel):
+    """サイトの表示名変更の入力(サイトID=slugは変更不可)"""
     name: str = Field(min_length=1, max_length=100)
 
 
 class RoomIn(BaseModel):
+    """ルームの作成・編集の入力。通話設定の上書きや出欠制も含む"""
     name: str = Field(min_length=1, max_length=100)
     team_id: int | None = None                       # 見える範囲(Noneで全員)
     passphrase: str = Field(default="", max_length=100)
@@ -405,15 +425,18 @@ class RoomIn(BaseModel):
 
 
 class RoomManagerIn(BaseModel):
+    """ルーム管理者の追加の入力(対象ユーザー名)"""
     username: str = Field(min_length=2, max_length=50)
 
 
 class AnnouncementIn(BaseModel):
+    """お知らせの投稿の入力"""
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=2000)
 
 
 class SettingsIn(BaseModel):
+    """サイト設定の一括更新の入力(管理画面・システム管理画面で共用)"""
     session_minutes: int = Field(ge=1, le=60)
     allow_registration: bool
     role_matching: bool = True
@@ -440,15 +463,18 @@ class SettingsIn(BaseModel):
 
 
 class BulkUsersIn(BaseModel):
+    """ユーザーCSV一括登録の入力(本文は1行=「ユーザー名,初期パスワード,メール」)"""
     csv: str = Field(min_length=1, max_length=20000)  # 1行=「ユーザー名,初期パスワード」
 
 
 class SiteIn(BaseModel):
+    """サイト作成の入力(サイトID=slugと表示名)"""
     slug: str = Field(min_length=2, max_length=30)
     name: str = Field(min_length=1, max_length=100)
 
 
 class UserCreateIn(BaseModel):
+    """サイト管理者によるユーザー作成の入力"""
     username: str = Field(min_length=2, max_length=50)
     password: str = Field(min_length=6, max_length=128)
     email: str | None = Field(default=None, max_length=120)  # 任意。設定すると案内メールを送る
