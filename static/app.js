@@ -1736,14 +1736,25 @@ async function loadDashboard() {
 
 /* 本日の予定バナー(heroとルームの間)。ルーム連携があれば押下で入室モーダル、
    RSVP(参加/不参加)も切り替えられる */
+/** 本日の予定(出欠制ルームの入室可否判定にも使う)。 @type {Array<Object>} */
+let todayEvents = [];
+
 async function loadTodayEvents() {
   let events = [];
   try {
     events = await api(`/api/events/today?date=${todayStr()}`);
   } catch { /* 取得できなくてもダッシュボードは表示する */ }
+  todayEvents = events;
   $("today-panel").classList.toggle("hidden", events.length === 0);
   if (!events.length) return;
   renderTodayEvents(events);
+}
+
+/* 出欠制ルームに今すぐ入室できるか(本日このルームに紐づくイベントで「参加」を選んでいるか)。
+   非出欠制のルームは常にtrue */
+function canEnterRoom(room) {
+  if (!room.attendance_required) return true;
+  return todayEvents.some((e) => e.room_id === room.id && e.my_attendance === "yes");
 }
 
 function renderTodayEvents(events) {
@@ -1758,8 +1769,10 @@ function renderTodayEvents(events) {
         e.room_attendance_required ? "出欠制" : "",
         `参加予定 ${e.yes_count}人`,
       ].filter(Boolean).join(" ・ ");
+      // 出欠制ルームで「参加」していないときは入室ボタンを無効化する
+      const joinBlocked = e.room_attendance_required && e.my_attendance !== "yes";
       const join = e.room_id && e.room_name
-        ? `<button class="today-join" data-evroom="${e.room_id}">入室する</button>`
+        ? `<button class="today-join" data-evroom="${e.room_id}"${joinBlocked ? ' disabled title="「参加」を選ぶと入室できます"' : ""}>入室する</button>`
         : "";
       const del = e.can_delete
         ? `<button class="btn-text danger" data-evdelete="${e.id}">削除</button>`
@@ -2224,6 +2237,7 @@ async function loadRooms() {
 
 /* ルームの詳細モーダル。ここからマッチング待機へ進む */
 function openRoomModal(room) {
+  const blocked = !canEnterRoom(room);  // 出欠制で「参加」していない=入室不可
   const modeNames = [
     room.modes.toon ? "デフォルメ" : null,
     room.modes.real ? "リアル" : null,
@@ -2244,22 +2258,35 @@ function openRoomModal(room) {
     </ul>
     ${room.attendance_required ? `<p class="note">📅 このルームは出欠制です。本日このルームに紐づくイベントで
       「参加」を選んだメンバーだけが入室でき、その人どうしでマッチングされます。</p>` : ""}
+    ${blocked ? `<p class="error">本日の出欠が「参加」になっていないため入室できません。
+      本日の予定から「参加」を選んでください。</p>` : ""}
     ${room.has_passphrase ? `<label>このルームには合言葉が必要です
       <input type="text" id="room-pass-input" maxlength="100" placeholder="合言葉を入力" autocomplete="off">
     </label>` : ""}
     <p id="room-join-error" class="error"></p>`;
   // 役割マッチングが有効なルームでは役割ごとの参加ボタンを出す
-  const actions = room.role_matching
+  let actions = room.role_matching
     ? [
         { label: "🗣️ 話し手として参加", primary: true, onClick: () => startRoomMatching(room, "speaker") },
         { label: "👂 聞き手として参加", primary: true, onClick: () => startRoomMatching(room, "listener") },
       ]
     : [{ label: "マッチング開始", primary: true, onClick: () => startRoomMatching(room, "any") }];
+  // 出欠制で「参加」していない場合は入室ボタンを無効化する
+  if (blocked) {
+    actions = actions.map((a) => ({ label: a.label, primary: a.primary, disabled: true,
+      title: "本日の予定から「参加」を選ぶと入室できます" }));
+  }
   openModal(`ルーム: ${room.name}`, body, actions);
 }
 
 /* モーダルからマッチング待機状態へ移行する */
 async function startRoomMatching(room, role) {
+  // 出欠制ルームで「参加」していない場合は入室させない(念のための二重チェック)
+  if (!canEnterRoom(room)) {
+    $("room-join-error").textContent =
+      "本日の出欠が「参加」になっていないため入室できません。本日の予定から「参加」を選んでください。";
+    return;
+  }
   let passphrase = "";
   if (room.has_passphrase) {
     passphrase = ($("room-pass-input") ? $("room-pass-input").value : "").trim();
@@ -3420,7 +3447,12 @@ function openModal(title, bodyHtml, actions) {
     const btn = document.createElement("button");
     btn.className = act.primary ? "btn-primary" : "btn-secondary";
     btn.textContent = act.label;
-    btn.onclick = act.onClick;
+    if (act.disabled) {
+      btn.disabled = true;        // 無効化されたアクション(出欠制で入室不可など)
+      if (act.title) btn.title = act.title;
+    } else {
+      btn.onclick = act.onClick;
+    }
     $("modal-actions").appendChild(btn);
   }
   $("modal").classList.remove("hidden");
