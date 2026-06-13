@@ -1905,30 +1905,36 @@ function renderAnnouncements(items) {
   });
 }
 
-/* お知らせ詳細モーダル。全文表示・前後ナビ・既読化・(権限者には)既読人数を表示 */
+// 閉じるボタン(右上のバツ)は一度だけ配線する
+$("ann-close").onclick = () => $("ann-detail-overlay").classList.add("hidden");
+
+/* お知らせ詳細モーダル。全文表示・右上の矢印で前後ナビ・既読化・(権限者には)既読人数を本文上部に表示 */
 async function openAnnouncementDetail(idx) {
   const a = announcementItems[idx];
   if (!a) return;
   const last = announcementItems.length - 1;
-  const meta = `<div class="ann-detail-meta">
-    ${a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span>` : '<span class="note">サイト全体</span>'}
-    <span class="note">${parseUTC(a.created_at).toLocaleString("ja-JP")}</span>
-  </div>`;
-  const body = `${meta}
-    <div class="ann-detail-body">${renderAnnouncementBody(a.body)}</div>
-    <div id="ann-stats" class="note"></div>`;
-  openModal(a.title, body, [
-    { label: "← 前へ", disabled: idx === 0, onClick: () => openAnnouncementDetail(idx - 1) },
-    { label: "次へ →", disabled: idx === last, onClick: () => openAnnouncementDetail(idx + 1) },
-    { label: "閉じる", onClick: closeModal },
-  ]);
-  // 本文中のルームリンク → ルーム入室モーダル
-  $("modal-body").querySelectorAll("[data-room-no]").forEach((btn) => {
+  $("ann-detail-title").textContent = a.title;
+  $("ann-detail-meta").innerHTML =
+    (a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span>` : '<span class="note">サイト全体</span>') +
+    ` <span class="note">${parseUTC(a.created_at).toLocaleString("ja-JP")}</span>`;
+  $("ann-stats").textContent = "";  // 権限者なら後で本文上部に埋める
+  $("ann-detail-body").innerHTML = renderAnnouncementBody(a.body);
+  // 右上の前へ/次へ(端では無効化)
+  $("ann-prev").disabled = idx === 0;
+  $("ann-next").disabled = idx === last;
+  $("ann-prev").onclick = () => openAnnouncementDetail(idx - 1);
+  $("ann-next").onclick = () => openAnnouncementDetail(idx + 1);
+  // 本文中のルームリンク → ルーム入室モーダル(お知らせ詳細は閉じる)
+  $("ann-detail-body").querySelectorAll("[data-room-no]").forEach((btn) => {
     btn.onclick = () => {
       const room = myRooms.find((r) => r.room_no === parseInt(btn.dataset.roomNo, 10));
-      if (room) openRoomModal(room);
+      if (room) {
+        $("ann-detail-overlay").classList.add("hidden");
+        openRoomModal(room);
+      }
     };
   });
+  $("ann-detail-overlay").classList.remove("hidden");
   // 既読にする(未読なら)。新着バッジを消すため一覧も再描画
   if (!a.is_read) {
     try {
@@ -1937,12 +1943,11 @@ async function openAnnouncementDetail(idx) {
       renderAnnouncements(announcementItems);
     } catch { /* 既読化に失敗しても表示は続ける */ }
   }
-  // 投稿権限者には送信対象人数・既読人数を表示
+  // 投稿権限者には送信対象人数・既読人数を本文の上に表示
   if (a.can_view_stats) {
     try {
       const s = await api(`/api/announcements/${a.id}/stats`);
-      const el = $("ann-stats");
-      if (el) el.textContent = `👁 既読 ${s.read_count} / 送信対象 ${s.recipients} 人`;
+      $("ann-stats").textContent = `👁 既読 ${s.read_count} / 送信対象 ${s.recipients} 人`;
     } catch { /* 取得できなくても本文は表示する */ }
   }
 }

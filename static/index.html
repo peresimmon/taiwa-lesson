@@ -806,6 +806,23 @@
     </div>
   </div>
 
+  <!-- お知らせ詳細モーダル(右上に前へ/次へ/閉じるのアイコン) -->
+  <div id="ann-detail-overlay" class="overlay hidden">
+    <div class="overlay-box ann-detail-box">
+      <div class="ann-detail-top">
+        <h3 id="ann-detail-title"></h3>
+        <div class="ann-detail-nav">
+          <button type="button" id="ann-prev" class="icon-btn" title="前のお知らせ" aria-label="前のお知らせ">‹</button>
+          <button type="button" id="ann-next" class="icon-btn" title="次のお知らせ" aria-label="次のお知らせ">›</button>
+          <button type="button" id="ann-close" class="icon-btn" title="閉じる" aria-label="閉じる">✕</button>
+        </div>
+      </div>
+      <div class="ann-detail-meta" id="ann-detail-meta"></div>
+      <div id="ann-stats" class="ann-stats"></div>
+      <div class="ann-detail-body" id="ann-detail-body"></div>
+    </div>
+  </div>
+
   <!-- ルーム作成・編集モーダル -->
   <div id="room-form-overlay" class="overlay hidden">
     <div class="overlay-box">

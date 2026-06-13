@@ -460,11 +460,26 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 0.66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-right: 6px;
 }
 /* お知らせ詳細モーダル */
-.ann-detail-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.ann-detail-body { white-space: pre-wrap; line-height: 1.9; word-break: break-word; margin-bottom: 12px; }
-#ann-stats:not(:empty) {
-  border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 6px; font-weight: 600;
+.ann-detail-box { max-width: 620px; }
+/* 上部: タイトル(左) + 前へ/次へ/閉じるのアイコン(右上) */
+.ann-detail-top { display: flex; align-items: flex-start; gap: 12px; }
+.ann-detail-top h3 { flex: 1; margin: 0; color: var(--primary); word-break: break-word; }
+.ann-detail-nav { display: flex; gap: 4px; flex-shrink: 0; }
+.icon-btn {
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border); border-radius: 8px; background: var(--card);
+  color: var(--text); font-size: 1.1rem; line-height: 1; cursor: pointer; font-family: inherit;
+  transition: all 0.15s;
 }
+.icon-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.ann-detail-meta { display: flex; align-items: center; gap: 10px; margin: 8px 0 10px; }
+/* 既読数(本文の上に表示) */
+.ann-stats:not(:empty) {
+  background: var(--primary-light); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 12px; font-size: 0.86rem; font-weight: 600; color: var(--primary-dark);
+}
+.ann-detail-body { white-space: pre-wrap; line-height: 1.9; word-break: break-word; }
 /* 本文の変数ヒント */
 .hint-btn {
   display: inline-flex; align-items: center; justify-content: center;
