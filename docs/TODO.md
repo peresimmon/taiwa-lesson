@@ -29,9 +29,10 @@
 
 ## デモ機能の撤去
 
-- [ ] **デモデータの生成・削除機能を削除する** — システム管理画面の「デモデータ」パネルと、
-      対応するAPI(`POST/DELETE /api/sysadmin/demo-data`、`app/main.py` の「デモデータ」セクション)を
-      本番運用では丸ごと削除する
+- [ ] **デモデータの生成・削除機能を削除する** — 開発者ページ(🛠 開発者)の「デモデータ」パネルと、
+      対応するAPI(`POST/DELETE /api/dev/demo-data`、`app/main.py` の `create_demo_data`/
+      `delete_demo_data`)を本番運用では丸ごと削除する。
+      ※現在は実APIルート経由で生成・削除している(DB直挿入はマッチング記録の `CallPair` のみ)
 
 ## メール
 
