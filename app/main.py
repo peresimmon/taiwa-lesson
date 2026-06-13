@@ -2473,6 +2473,20 @@ def admin_delete_user(
     db.query(Event).filter(Event.user_id == user_id).delete()
     db.query(Post).filter(Post.user_id == user_id).delete()
     db.query(TeamMember).filter(TeamMember.user_id == user_id).delete()
+    db.query(RoomManager).filter(RoomManager.user_id == user_id).delete()
+    # トラスト&セーフティ系(通話履歴・通報・ブロック・警告)も掃除して孤児を残さない
+    from sqlalchemy import or_
+
+    db.query(CallPair).filter(
+        or_(CallPair.user_a == user_id, CallPair.user_b == user_id)
+    ).delete(synchronize_session=False)
+    db.query(Report).filter(
+        or_(Report.reporter_id == user_id, Report.reported_id == user_id)
+    ).delete(synchronize_session=False)
+    db.query(Block).filter(
+        or_(Block.user_id == user_id, Block.blocked_id == user_id)
+    ).delete(synchronize_session=False)
+    db.query(Warning).filter(Warning.user_id == user_id).delete(synchronize_session=False)
     db.delete(target)
     audit(db, admin, "user_delete", target.username)
     db.commit()
@@ -3076,221 +3090,217 @@ def create_demo_data(
     ):
         raise HTTPException(status_code=409, detail="デモデータは既に存在します。先に削除してください")
 
+    from datetime import date as _date
+
     now = utcnow().replace(tzinfo=None)
     # 「本日」のデモイベントは、クライアントのローカル日付に合わせる(未指定はサーバーUTC日付)
     today_str = date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or "") else now.date().isoformat()
+    today = _date.fromisoformat(today_str)
 
-    # ユーザー(先頭2人はモデレータ)。パスワードは全員 demo1234
+    def dstr(days):
+        return (today + timedelta(days=days)).isoformat()
+
+    # --- 通常のユーザー登録と同じ道順で作る(直接DB挿入ではなくエンドポイント関数を呼ぶ) ---
+    # 唯一 CallPair(通話の記録)だけはユーザーが登録するものではなく、マッチングエンジンが
+    # 内部生成する記録のため、本番と同じく直接記録する。
+
+    def make_user(actor, name, role="user", email=None, display_name=None, active=True):
+        """管理画面のユーザー作成 → 本人がパスワード変更(初回変更を解除)→ 役割/有効化、の通常導線"""
+        uname = f"{DEMO_USER_PREFIX}{name}"
+        res = admin_create_user(UserCreateIn(username=uname, password="demo1234", email=email),
+                                admin=actor, db=db)
+        u = db.get(User, res["id"])
+        change_password(PasswordIn(current_password="demo1234", new_password="demo1234"), user=u, db=db)
+        if display_name:
+            update_me(MeUpdateIn(display_name=display_name), user=db.get(User, u.id), db=db)
+        if role != "user":
+            admin_set_role(u.id, RoleIn(role=role), admin=actor, db=db)
+        if not active:
+            admin_set_active(u.id, ActiveIn(is_active=False), admin=actor, db=db)
+        return db.get(User, u.id)
+
+    def make_team(name, description=""):
+        return admin_create_team(TeamIn(name=name, description=description), admin=admin, db=db)["id"]
+
+    def add_member(team_id, user, is_leader=False):
+        team_add_member(team_id, TeamMemberIn(username=user.username, is_leader=is_leader),
+                        user=admin, db=db)
+
+    def make_room(actor, name, **kw):
+        return create_room(RoomIn(name=name, **kw), user=actor, db=db)["id"]
+
+    def make_event(actor, **kw):
+        return create_event(EventIn(**kw), user=actor, db=db)["id"]
+
+    def rsvp(user, event_id, status):
+        set_attendance(event_id, AttendanceIn(status=status), user=user, db=db)
+
+    def announce(actor, title, body, team_id=None):
+        return admin_create_announcement(AnnouncementIn(title=title, body=body, team_id=team_id),
+                                         admin=actor, db=db)["id"]
+
+    # ロール: site_admin 1名・モデレータ2名・無効化1名・残りは一般。表示名/メールも一部設定
+    roles = {0: "moderator", 1: "site_admin", 2: "moderator"}
     demo_users: list[User] = []
-    pw_hash = hash_password("demo1234")
     for i, name in enumerate(DEMO_NAMES):
-        u = User(
-            site_id=sid,
-            username=f"{DEMO_USER_PREFIX}{name}",
-            password_hash=pw_hash,
-            role="moderator" if i < 2 else "user",
-            created_at=now - timedelta(days=random.randint(3, 30)),
-        )
-        db.add(u)
-        demo_users.append(u)
-    db.flush()
+        demo_users.append(make_user(
+            admin, name, role=roles.get(i, "user"),
+            email=(f"{name}@example.com" if i in (3, 4) else None),
+            display_name=(f"{name}先生" if i in (0, 5) else None),
+            active=(i != 11),  # 末尾の1名は無効化(無効ユーザーの表示確認用)
+        ))
 
-    # チーム(先頭メンバーがリーダー)
-    team_defs = [
-        ("デモ_営業チーム", demo_users[0:5]),
-        ("デモ_開発チーム", demo_users[4:9]),
-        ("デモ_人事チーム", demo_users[9:12]),
-    ]
-    teams: list[Team] = []
-    for tname, members in team_defs:
-        team = Team(site_id=sid, name=tname)
-        db.add(team)
-        db.flush()
-        for j, m in enumerate(members):
-            db.add(TeamMember(team_id=team.id, user_id=m.id, is_leader=(j == 0)))
-        teams.append(team)
+    # チーム(単独リーダー / 共同リーダー / administratorがリーダー の各パターン)
+    sales_id = make_team("デモ_営業チーム", "営業チームのデモ")
+    for j, u in enumerate(demo_users[0:5]):
+        add_member(sales_id, u, is_leader=(j == 0))            # 単独リーダー(さくら=モデレータ)
+    dev_id = make_team("デモ_開発チーム", "開発チームのデモ")
+    for j, u in enumerate(demo_users[4:9]):
+        add_member(dev_id, u, is_leader=(j < 2))               # 共同リーダー2名
+    hr_id = make_team("デモ_人事チーム", "人事チームのデモ")
+    for j, u in enumerate(demo_users[9:12]):
+        add_member(hr_id, u, is_leader=(j == 0))
+    admin_team_id = make_team("デモ_管理者チーム", "administratorがリーダーのデモチーム")
+    add_member(admin_team_id, admin, is_leader=True)           # administrator がリーダー
+    for u in demo_users[5:8]:
+        add_member(admin_team_id, u, is_leader=False)
+    team_count = 4
 
-    # 通話履歴(直近14日に分散。両者分のアンケートつき)
-    session_count = 30
-    for _ in range(session_count):
-        a, b = random.sample(demo_users, 2)
-        when = now - timedelta(days=random.randint(0, 13), hours=random.randint(0, 12))
-        call_id = "demo" + secrets.token_hex(14)
-        db.add(CallPair(call_id=call_id, site_id=sid, user_a=a.id, user_b=b.id, created_at=when))
-        for u in (a, b):
-            db.add(
-                Survey(
-                    user_id=u.id,
-                    room_id=call_id,
-                    rating=random.randint(3, 5),
-                    talk_again=random.random() < 0.5,
-                    comment=random.choice(DEMO_COMMENTS),
-                    created_at=when,
-                )
-            )
+    moderator = demo_users[0]  # さくら(モデレータ&営業リーダー)
 
-    # 掲示板(サイト全体+チーム限定)
+    # ルーム(全パターン)。作成者はモデレータ/管理者でルーム作成権限も確認
+    chat_room = make_room(moderator, "デモ_雑談ルーム", topic="最近うれしかったこと")
+    make_room(moderator, "デモ_合言葉ルーム", passphrase="aikotoba", topic="合言葉つきの部屋")
+    make_room(admin, "デモ_定員2ルーム", capacity=2)
+    make_room(admin, "デモ_役割なしルーム", role_matching=False)
+    make_room(admin, "デモ_期間限定ルーム", expires_hours=6)
+    chat_mgr_room = make_room(admin, "デモ_管理者追加ルーム", topic="ルーム管理者を追加した例")
+    add_room_manager(chat_mgr_room, RoomManagerIn(username=demo_users[2].username), user=admin, db=db)
+
+    # 出欠制ルーム(朝会) + 本日のイベント。営業メンバーの一部が「参加」
+    morning_room = make_room(moderator, "デモ_朝会ルーム", team_id=sales_id,
+                             topic="昨日の学び・今日やること", session_minutes=5,
+                             attendance_required=True)
+    morning_event = make_event(moderator, title="営業チーム 朝会", date=today_str,
+                               start_time="09:00", team_id=sales_id, room_id=morning_room)
+    for j, u in enumerate(demo_users[0:5]):
+        rsvp(u, morning_event, "no" if j == 4 else "yes")
+
+    # administrator用の出欠制ルーム + 本日のミーティング(administratorは参加済み・本日の予定で切替可能)
+    admin_room = make_room(admin, "デモ_管理者ルーム", team_id=admin_team_id,
+                           topic="今日の気づきをシェア", session_minutes=10, attendance_required=True)
+    admin_today = make_event(admin, title="管理者チーム ミーティング", date=today_str,
+                             start_time="13:00", team_id=admin_team_id, room_id=admin_room)
+    rsvp(admin, admin_today, "yes")
+    for u in demo_users[5:7]:
+        rsvp(u, admin_today, "yes")
+    room_count = 8
+
+    # イベント(全パターン: 単発の過去/本日/未来・時刻あり/なし・繰り返し・チーム限定)
+    # 作成者はデモユーザー(削除時に admin_delete_user でまとめて掃除されるようにする)
+    make_event(demo_users[3], title="先週のふりかえり会", date=dstr(-7), start_time="17:00")
+    make_event(demo_users[3], title="お昼の雑談タイム", date=today_str)  # 本日・時刻なし・ルームなし
+    make_event(demo_users[6], title="来週のキックオフ", date=dstr(5), start_time="10:30")
+    make_event(moderator, title="毎朝のチェックイン", date=today_str, start_time="08:30",
+               repeat="weekdays", repeat_until=dstr(13))          # 平日くりかえし
+    make_event(moderator, title="週次レビュー", date=today_str, start_time="16:00",
+               repeat="weekly", repeat_until=dstr(28))            # 毎週
+    make_event(moderator, title="月初のお知らせ会", date=today_str, repeat="monthly",
+               repeat_until=dstr(90))                             # 毎月
+    make_event(moderator, title="営業チーム 定例", date=dstr(3), start_time="11:00", team_id=sales_id)
+    make_event(admin, title="管理者チーム ふりかえり", date=dstr(7), start_time="15:00",
+               team_id=admin_team_id, room_id=admin_room)
+
+    # 掲示板(サイト全体 + チーム限定)
     for body_text in DEMO_POSTS:
-        db.add(
-            Post(
-                user_id=random.choice(demo_users).id,
-                body=body_text,
-                created_at=now - timedelta(days=random.randint(0, 10), hours=random.randint(0, 12)),
-            )
-        )
-    db.add(Post(user_id=demo_users[0].id, team_id=teams[0].id, body="(チーム限定)今月の目標は「最後まで聴く」です"))
+        create_post(PostIn(body=body_text), user=random.choice(demo_users[:11]), db=db)
+    create_post(PostIn(body="(営業チーム限定)今月の目標は「最後まで聴く」です", team_id=sales_id),
+                user=moderator, db=db)
+    create_post(PostIn(body="(管理者チーム限定)デモ用の管理者チームです", team_id=admin_team_id),
+                user=admin, db=db)
 
-    # イベント(今月の予定。一部は時刻つき)
-    for i, title in enumerate(DEMO_EVENTS):
-        date = (now + timedelta(days=2 + i * 5)).date().isoformat()
-        db.add(Event(
-            user_id=random.choice(demo_users).id, title=title, date=date,
-            start_time=["10:00", "14:00", "16:30", None][i % 4],
-        ))
+    # お知らせ(サイト全体: 変数つき / 通常、チーム限定)。一部は既読をつけて統計を試せるように
+    chat_no = db.get(Room, chat_room).room_no
+    ann_var = announce(admin, "【デモ】ルーム案内",
+                       f"気軽な雑談は {{room{chat_no}}} へどうぞ。本文に書いた {{room番号}} はルームへのリンクになります。")
+    announce(admin, "【デモ】サンプルのお知らせ",
+             "これはデモデータです。開発者ページの「デモデータを削除」でまとめて削除できます。")
+    announce(moderator, "【デモ】営業チームへの連絡", "営業チーム限定のお知らせです。", team_id=sales_id)
+    # 既読をつける(送信対象/既読人数の確認用)
+    for u in demo_users[2:7]:
+        mark_announcement_read(ann_var, user=u, db=db)
 
-    # ルーム(サイト内一意の連番room_noを採番する。お知らせ本文の {roomN} で参照される)
-    from sqlalchemy import func as _func
+    # 通話履歴(CallPairはマッチングエンジンが作る内部記録。アンケートは通常導線で投稿)
+    session_count = 30
+    report_call_ids = []
+    for i in range(session_count):
+        a, b = random.sample(demo_users[:11], 2)  # 無効化ユーザーは除く
+        call_id = "demo" + secrets.token_hex(14)
+        db.add(CallPair(call_id=call_id, site_id=sid, user_a=a.id, user_b=b.id))
+        db.flush()
+        mutual = i < 4  # 数件は相互「また話したい」(再マッチ優先の確認用)
+        submit_survey(SurveyIn(room_id=call_id, rating=random.randint(3, 5),
+                               talk_again=mutual or random.random() < 0.4,
+                               comment=random.choice(DEMO_COMMENTS)), user=a, db=db)
+        submit_survey(SurveyIn(room_id=call_id, rating=random.randint(3, 5),
+                               talk_again=mutual or random.random() < 0.4,
+                               comment=random.choice(DEMO_COMMENTS)), user=b, db=db)
+        if i < 2:
+            report_call_ids.append((call_id, a, b))
 
-    next_room_no = (db.query(_func.max(Room.room_no)).filter(Room.site_id == sid).scalar() or 0) + 1
+    # トラスト&セーフティ(通報2件→1件対応済み・ブロック・警告)
+    if report_call_ids:
+        cid0, ra, _rb = report_call_ids[0]
+        create_report(ReportIn(call_id=cid0, reason="不適切な発言があった(デモ)"), user=ra, db=db)
+        cid1, ra1, _ = report_call_ids[1]
+        create_report(ReportIn(call_id=cid1, reason="時間に遅れてきた(デモ)"), user=ra1, db=db)
+        # 1件目を対応済みにする
+        rep = db.query(Report).filter(Report.site_id == sid).order_by(Report.id).first()
+        if rep:
+            update_report(rep.id, ReportStatusIn(status="resolved"), admin=admin, db=db)
+        # ブロック
+        create_block(BlockIn(call_id=cid0), user=ra, db=db)
+    # 警告(administratorが発令。対象ユーザーの次回ログイン時にポップアップ)
+    create_warning(WarningIn(user_id=demo_users[8].id, message="(デモ)対話のルールを確認してください"),
+                   user=admin, db=db)
 
-    db.add(
-        Room(
-            site_id=sid,
-            creator_id=demo_users[0].id,
-            name="デモ_雑談ルーム",
-            topic="最近うれしかったこと",
-            room_no=next_room_no,
-        )
+    # --- デモ用サブサイト(企業向けの見本)。サイト作成も通常導線(システム管理)で行う ---
+    site_res = sysadmin_create_site(SiteIn(slug=DEMO_SITE_SLUG, name="デモ株式会社"), admin=admin, db=db)
+    sub_site = db.query(Site).filter(Site.slug == DEMO_SITE_SLUG).first()
+    sub_admin = db.query(User).filter(
+        User.site_id == sub_site.id, User.username == f"{DEMO_SITE_SLUG}_admin"
+    ).first()
+    # サブサイト管理者の初回パスワード変更を済ませる(通常導線。以後そのままログイン可能)
+    change_password(
+        PasswordIn(current_password=site_res["initial_password"], new_password=site_res["initial_password"]),
+        user=sub_admin, db=db,
     )
-    next_room_no += 1
-
-    # 朝会の例: 営業チーム限定・出欠制マッチングのルーム + 本日のイベント。
-    # チームメンバーの一部が「参加」、入室するとその人どうしでランダムにマッチングされる
-    morning_room = Room(
-        site_id=sid,
-        creator_id=demo_users[0].id,
-        name="デモ_朝会ルーム",
-        team_id=teams[0].id,
-        topic="昨日の学び・今日やること",
-        session_minutes=5,
-        attendance_required=True,
-        room_no=next_room_no,
-    )
-    next_room_no += 1
-    db.add(morning_room)
-    db.flush()
-    morning_event = Event(
-        user_id=demo_users[0].id, title="営業チーム 朝会",
-        date=today_str, start_time="09:00",
-        team_id=teams[0].id, room_id=morning_room.id,
-    )
-    db.add(morning_event)
-    db.flush()
-    # 営業チーム5人のうち先頭4人が「参加」、1人は「不参加」
-    for j, m in enumerate(team_defs[0][1]):
-        db.add(EventAttendance(
-            event_id=morning_event.id, user_id=m.id,
-            status="no" if j == 4 else "yes",
-        ))
-
-    # administratorをリーダーにしたチーム + ルーム + イベント(動作確認用)。
-    # ログイン中のadministratorがダッシュボードですぐ確認できるデータを用意する
-    admin_team = Team(site_id=sid, name="デモ_管理者チーム",
-                      description="administratorがリーダーのデモチーム")
-    db.add(admin_team)
-    db.flush()
-    db.add(TeamMember(team_id=admin_team.id, user_id=admin.id, is_leader=True))
-    for m in demo_users[5:8]:  # デモメンバーを数名追加
-        db.add(TeamMember(team_id=admin_team.id, user_id=m.id, is_leader=False))
-    teams.append(admin_team)
-    # 出欠制ルーム。administratorは管理者チームのメンバーなので、本日のミーティングが
-    # 「本日の予定」に出る → そこで参加/不参加を切り替えると入室ボタンの活性が変わるのを試せる
-    admin_room = Room(
-        site_id=sid, creator_id=admin.id, name="デモ_管理者ルーム",
-        team_id=admin_team.id, topic="今日の気づきをシェア", session_minutes=10,
-        attendance_required=True, room_no=next_room_no,
-    )
-    next_room_no += 1
-    db.add(admin_room)
-    db.flush()
-    # 本日のミーティング(ルーム連携)。administratorは「参加」済み(本日の予定で切替可能)
-    admin_today = Event(
-        user_id=admin.id, title="管理者チーム ミーティング",
-        date=today_str, start_time="13:00",
-        team_id=admin_team.id, room_id=admin_room.id,
-    )
-    db.add(admin_today)
-    db.flush()
-    db.add(EventAttendance(event_id=admin_today.id, user_id=admin.id, status="yes"))
-    for m in demo_users[5:7]:
-        db.add(EventAttendance(event_id=admin_today.id, user_id=m.id, status="yes"))
-    # 掲示板・来週の予定(チーム限定)も用意
-    db.add(Post(user_id=admin.id, team_id=admin_team.id,
-                body="(チーム限定)デモ用の管理者チームです。ルームから通話を試せます"))
-    db.add(Event(
-        user_id=admin.id, title="管理者チーム ふりかえり",
-        date=(now + timedelta(days=7)).date().isoformat(), start_time="15:00",
-        team_id=admin_team.id, room_id=admin_room.id,
-    ))
-
-    db.add(
-        Announcement(
-            site_id=sid,
-            title="【デモ】サンプルのお知らせ",
-            body="これはデモデータです。開発者ページの「デモデータを削除」でまとめて削除できます。",
-        )
-    )
-
-    # --- デモ用サブサイト(企業向けの見本) ---
-    sub_site = Site(slug=DEMO_SITE_SLUG, name="デモ株式会社")
-    db.add(sub_site)
-    db.flush()
-    sub_admin, _ = create_site_admin(db, sub_site)
-    sub_admin.must_change_password = False  # デモなのでそのままログイン可能にする
-    # 社内ツールらしい設定(実名表示・実映像あり)
-    set_setting(db, sub_site.id, "anonymous_mode", "false")
-    set_setting(db, sub_site.id, "mode_camera", "true")
-    sub_users: list[User] = []
-    for i, name in enumerate(DEMO_SUB_NAMES):
-        u = User(
-            site_id=sub_site.id,
-            username=f"{DEMO_USER_PREFIX}{name}",
-            password_hash=pw_hash,
-            role="moderator" if i == 0 else "user",
-            created_at=now - timedelta(days=random.randint(3, 20)),
-        )
-        db.add(u)
-        sub_users.append(u)
-    db.flush()
-    sub_team = Team(site_id=sub_site.id, name="デモ_総務チーム")
-    db.add(sub_team)
-    db.flush()
-    for j, m in enumerate(sub_users[:4]):
-        db.add(TeamMember(team_id=sub_team.id, user_id=m.id, is_leader=(j == 0)))
+    # 社内ツールらしい設定(実名表示・実映像あり)はサイト設定の保存で(通常導線)
+    _s = _settings_payload(db, sub_site.id)
+    _s.update({"anonymous_mode": False, "mode_camera": True})
+    sysadmin_put_site_settings(sub_site.id, SettingsIn(**_s), admin=admin, db=db)
+    sub_users = [make_user(sub_admin, name, role=("moderator" if i == 0 else "user"))
+                 for i, name in enumerate(DEMO_SUB_NAMES)]
+    sub_team_id = admin_create_team(TeamIn(name="デモ_総務チーム"), admin=sub_admin, db=db)["id"]
+    for j, u in enumerate(sub_users[:4]):
+        team_add_member(sub_team_id, TeamMemberIn(username=u.username, is_leader=(j == 0)),
+                        user=sub_admin, db=db)
     sub_sessions = 10
     for _ in range(sub_sessions):
         a, b = random.sample(sub_users, 2)
-        when = now - timedelta(days=random.randint(0, 13), hours=random.randint(0, 12))
         call_id = "demo" + secrets.token_hex(14)
-        db.add(CallPair(call_id=call_id, site_id=sub_site.id, user_a=a.id, user_b=b.id, created_at=when))
-        for u in (a, b):
-            db.add(
-                Survey(
-                    user_id=u.id, room_id=call_id, rating=random.randint(3, 5),
-                    talk_again=random.random() < 0.5,
-                    comment=random.choice(DEMO_COMMENTS), created_at=when,
-                )
-            )
-    db.add(Post(user_id=sub_users[0].id, body="社内の1on1代わりに使ってみています"))
-    db.add(Event(user_id=sub_users[0].id, title="部署横断 雑談会",
-                 date=(now + timedelta(days=4)).date().isoformat()))
-    db.add(
-        Announcement(
-            site_id=sub_site.id,
-            title="【デモ】デモ株式会社のサイトです",
-            body="サブサイトのデモです。実名表示・実映像ありの社内向け設定になっています。",
-        )
-    )
+        db.add(CallPair(call_id=call_id, site_id=sub_site.id, user_a=a.id, user_b=b.id))
+        db.flush()
+        submit_survey(SurveyIn(room_id=call_id, rating=random.randint(3, 5),
+                               talk_again=random.random() < 0.5,
+                               comment=random.choice(DEMO_COMMENTS)), user=a, db=db)
+        submit_survey(SurveyIn(room_id=call_id, rating=random.randint(3, 5),
+                               talk_again=random.random() < 0.5,
+                               comment=random.choice(DEMO_COMMENTS)), user=b, db=db)
+    create_post(PostIn(body="社内の1on1代わりに使ってみています"), user=sub_users[0], db=db)
+    make_event(sub_users[0], title="部署横断 雑談会", date=dstr(4))
+    announce(sub_admin, "【デモ】デモ株式会社のサイトです",
+             "サブサイトのデモです。実名表示・実映像ありの社内向け設定になっています。")
 
     audit(db, admin, "demo_create",
           f"ユーザー{len(demo_users)}件・セッション{session_count}件・サブサイト{DEMO_SITE_SLUG}")
@@ -3298,11 +3308,11 @@ def create_demo_data(
     return {
         "ok": True,
         "users": len(demo_users),
-        "teams": len(teams),
+        "teams": team_count,
         "sessions": session_count,
-        "posts": len(DEMO_POSTS) + 2,
-        "events": len(DEMO_EVENTS),
-        "rooms": 3,  # 雑談・朝会・管理者ルーム
+        "posts": len(DEMO_POSTS) + 3,
+        "events": 16,
+        "rooms": room_count,
         "subsite": DEMO_SITE_SLUG,
         "subsite_users": len(sub_users) + 1,  # サイト管理者を含む
         "subsite_sessions": sub_sessions,
@@ -3310,94 +3320,57 @@ def create_demo_data(
 
 
 @app.delete("/api/dev/demo-data")
-def delete_demo_data(
+async def delete_demo_data(
     admin: User = Depends(dev_user), db: Session = Depends(get_db)
 ):
-    """生成したデモデータをまとめて削除する(開発者ページから)"""
-    from sqlalchemy import or_
-
+    """生成したデモデータをまとめて削除する(開発者ページから)。
+    生成と同様、直接DB削除ではなく通常のエンドポイント(ルート)を通して削除する"""
     sid = admin.site_id
-    demo_users = (
-        db.query(User)
-        .filter(User.site_id == sid, User.username.startswith(DEMO_USER_PREFIX, autoescape=True))
-        .all()
-    )
-    user_ids = [u.id for u in demo_users]
-    if user_ids:
-        db.query(Survey).filter(Survey.user_id.in_(user_ids)).delete(synchronize_session=False)
-        db.query(CallPair).filter(
-            or_(CallPair.user_a.in_(user_ids), CallPair.user_b.in_(user_ids))
-        ).delete(synchronize_session=False)
-        db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
-        demo_event_ids = [e.id for e in db.query(Event).filter(Event.user_id.in_(user_ids)).all()]
-        if demo_event_ids:
-            db.query(EventAttendance).filter(
-                EventAttendance.event_id.in_(demo_event_ids)
-            ).delete(synchronize_session=False)
-        db.query(EventAttendance).filter(
-            EventAttendance.user_id.in_(user_ids)
-        ).delete(synchronize_session=False)
-        db.query(AnnouncementRead).filter(
-            AnnouncementRead.user_id.in_(user_ids)
-        ).delete(synchronize_session=False)
-        db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
-        db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
-        db.query(Block).filter(
-            or_(Block.user_id.in_(user_ids), Block.blocked_id.in_(user_ids))
-        ).delete(synchronize_session=False)
-        db.query(Warning).filter(Warning.user_id.in_(user_ids)).delete(synchronize_session=False)
-        db.query(Report).filter(
-            or_(Report.reporter_id.in_(user_ids), Report.reported_id.in_(user_ids))
-        ).delete(synchronize_session=False)
-        db.query(RoomManager).filter(RoomManager.user_id.in_(user_ids)).delete(synchronize_session=False)
 
-    # デモのチーム・ルーム・お知らせ(名前のプレフィックスで判定)
+    # 1) お知らせ(【デモ】) → admin_delete_announcement(既読も掃除)
+    for a in db.query(Announcement).filter(
+        Announcement.site_id == sid, Announcement.title.startswith("【デモ】", autoescape=True)
+    ).all():
+        admin_delete_announcement(a.id, admin=admin, db=db)
+
+    # 2) チーム(デモ_) → admin_delete_team(メンバー・チーム投稿・チームイベント+RSVPを掃除)
     demo_teams = db.query(Team).filter(
         Team.site_id == sid, Team.name.startswith("デモ_", autoescape=True)
     ).all()
-    for team in demo_teams:
-        db.query(TeamMember).filter(TeamMember.team_id == team.id).delete(synchronize_session=False)
-        db.query(Post).filter(Post.team_id == team.id).delete(synchronize_session=False)
-        # チーム限定イベントのRSVP(administratorなどデモ外ユーザー分も含む)を先に消す
-        team_event_ids = [e.id for e in db.query(Event).filter(Event.team_id == team.id).all()]
-        if team_event_ids:
-            db.query(EventAttendance).filter(
-                EventAttendance.event_id.in_(team_event_ids)
-            ).delete(synchronize_session=False)
-        db.query(Event).filter(Event.team_id == team.id).delete(synchronize_session=False)
-        db.delete(team)
+    for t in demo_teams:
+        admin_delete_team(t.id, admin=admin, db=db)
+    team_n = len(demo_teams)
+
+    # 3) ルーム(デモ_) → delete_room(非同期)
     demo_rooms = db.query(Room).filter(
         Room.site_id == sid, Room.name.startswith("デモ_", autoescape=True)
     ).all()
-    for room in demo_rooms:
-        db.query(RoomManager).filter(RoomManager.room_id == room.id).delete(synchronize_session=False)
-        db.query(Event).filter(Event.room_id == room.id).update({"room_id": None})
-        db.delete(room)
-    demo_ann_ids = [a.id for a in db.query(Announcement).filter(
-        Announcement.site_id == sid, Announcement.title.startswith("【デモ】", autoescape=True)
-    ).all()]
-    if demo_ann_ids:
-        db.query(AnnouncementRead).filter(
-            AnnouncementRead.announcement_id.in_(demo_ann_ids)
-        ).delete(synchronize_session=False)
-    db.query(Announcement).filter(
-        Announcement.site_id == sid, Announcement.title.startswith("【デモ】", autoescape=True)
-    ).delete(synchronize_session=False)
-    if user_ids:
-        db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+    for r in demo_rooms:
+        await delete_room(r.id, user=admin, db=db)
+    room_n = len(demo_rooms)
 
-    # デモ用サブサイトを丸ごと削除
+    # 4) ユーザー(デモ_) → 管理者ロールは降格してから admin_delete_user(関連データもカスケード)
+    demo_users = db.query(User).filter(
+        User.site_id == sid, User.username.startswith(DEMO_USER_PREFIX, autoescape=True)
+    ).all()
+    for u in demo_users:
+        if u.role in ("site_admin", "system_admin"):
+            admin_set_role(u.id, RoleIn(role="user"), admin=admin, db=db)
+        admin_delete_user(u.id, admin=admin, db=db)
+    user_n = len(demo_users)
+
+    # 5) デモ用サブサイトを丸ごと削除(システム管理の削除導線)
     sub_site = db.query(Site).filter(Site.slug == DEMO_SITE_SLUG).first()
     if sub_site:
-        _delete_site_data(db, sub_site)
+        sysadmin_delete_site(sub_site.id, admin=admin, db=db)
 
-    audit(db, admin, "demo_delete", f"ユーザー{len(user_ids)}件ほか")
+    audit(db, admin, "demo_delete", f"ユーザー{user_n}件ほか")
     db.commit()
     return {
         "ok": True,
-        "users": len(user_ids),
-        "teams": len(demo_teams),
-        "rooms": len(demo_rooms),
+        "users": user_n,
+        "teams": team_n,
+        "rooms": room_n,
         "subsite": DEMO_SITE_SLUG if sub_site else None,
     }
 

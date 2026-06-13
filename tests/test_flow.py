@@ -1570,6 +1570,20 @@ def test_demo_data(users, admin_headers):
     demo_users = [u for u in r.json() if u["username"].startswith("デモ_")]
     check("デモユーザーが一覧に出る", len(demo_users) == 12, len(demo_users))
     check("モデレータも含まれる", any(u["role"] == "moderator" for u in demo_users), demo_users[:3])
+    check("サイト管理者も含まれる", any(u["role"] == "site_admin" for u in demo_users), demo_users)
+    check("無効化アカウントが含まれる",
+          sum(1 for u in demo_users if not u.get("is_active", True)) >= 1, demo_users)
+    # モデレータ兼チームリーダー(デモ_さくら)でログイン → リーダー判定
+    r = requests.post(f"{BASE}/api/login", json={"username": "デモ_さくら", "password": "demo1234"})
+    check("モデレータ兼リーダーでログインできる",
+          r.status_code == 200 and not r.json()["must_change_password"], r.text)
+    sakura_me = requests.get(f"{BASE}/api/me",
+                             headers={"Authorization": f"Bearer {r.json()['token']}"}).json()
+    check("デモ_さくらがチームリーダー", sakura_me.get("is_team_leader") is True, sakura_me)
+    # サイト管理者(デモ_たろう)でログイン
+    r = requests.post(f"{BASE}/api/login", json={"username": "デモ_たろう", "password": "demo1234"})
+    check("サイト管理者デモユーザーでログインできる",
+          r.status_code == 200 and r.json()["role"] == "site_admin", r.text)
     r = requests.get(f"{BASE}/api/admin/teams", headers=admin_headers)
     demo_teams_list = [t for t in r.json() if t["name"].startswith("デモ_")]
     check("デモチームが作られる(管理者チーム含む4件)", len(demo_teams_list) == 4, r.text)
@@ -1583,7 +1597,18 @@ def test_demo_data(users, admin_headers):
           any(e["title"] == "管理者チーム ミーティング" and e["room_name"] == "デモ_管理者ルーム"
               for e in today_evs), today_evs)
     rooms = requests.get(f"{BASE}/api/rooms", headers=admin_headers).json()
+    demo_rooms = [rm for rm in rooms if rm["name"].startswith("デモ_")]
     check("管理者ルームが見える", any(rm["name"] == "デモ_管理者ルーム" for rm in rooms), rooms)
+    check("デモルームが8件", len(demo_rooms) == 8, [rm["name"] for rm in demo_rooms])
+    check("全デモルームにroom_noが採番される",
+          all(rm.get("room_no") for rm in demo_rooms), demo_rooms)
+    check("出欠制ルームが含まれる(朝会・管理者)",
+          sum(1 for rm in demo_rooms if rm.get("attendance_required")) >= 2, demo_rooms)
+    # {roomN} 変数リンク入りのお知らせがある
+    anns = requests.get(f"{BASE}/api/announcements", headers=admin_headers).json()
+    import re as _re
+    check("ルーム番号変数を含むお知らせがある",
+          any(_re.search(r"\{room\d+\}", a.get("body", "")) for a in anns), anns)
     r = requests.get(f"{BASE}/api/admin/report", headers=admin_headers)
     check("セッション履歴がレポートに反映される", r.json()["total_sessions"] >= 60, r.json()["total_sessions"])
     r = requests.post(f"{BASE}/api/login", json={"username": "デモ_さくら", "password": "demo1234"})
