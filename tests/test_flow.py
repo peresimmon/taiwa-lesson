@@ -1429,6 +1429,59 @@ def test_leader_admin(users, admin_headers):
             requests.delete(f"{BASE}/api/admin/announcements/{a['id']}", headers=admin_headers)
 
 
+def test_announcement_ext(users, admin_headers):
+    print("[24] お知らせ拡張(既読・統計・ルーム番号変数)")
+    sfx = secrets.token_hex(3)
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+
+    # ルームにサイト内一意の連番(room_no)が振られる
+    uid0 = requests.get(f"{BASE}/api/me", headers=h0).json()["id"]
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "moderator"})
+    r1 = requests.post(f"{BASE}/api/rooms", headers=h0, json={"name": f"R1_{sfx}"}).json()
+    r2 = requests.post(f"{BASE}/api/rooms", headers=h0, json={"name": f"R2_{sfx}"}).json()
+    check("ルーム作成時にroom_noが返る", isinstance(r1.get("room_no"), int) and r2["room_no"] == r1["room_no"] + 1, (r1, r2))
+    rooms = requests.get(f"{BASE}/api/rooms", headers=h0).json()
+    check("ルーム一覧にroom_noが含まれる",
+          all(isinstance(rm["room_no"], int) for rm in rooms), rooms[:2])
+
+    # サイト全体お知らせを投稿(本文に {roomN} 変数)
+    title = f"ann_{sfx}"
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=admin_headers,
+                      json={"title": title, "body": f"ルーム {{room{r1['room_no']}}} 集合"})
+    check("変数つきお知らせ投稿", r.status_code == 201, r.text)
+
+    # 取得時に is_read=false / can_view_stats が返る
+    items = requests.get(f"{BASE}/api/announcements", headers=h0).json()
+    a = next(x for x in items if x["title"] == title)
+    check("未読は is_read=false", a["is_read"] is False, a)
+    check("一般→投稿権限なしは can_view_stats=false", a["can_view_stats"] is False, a)
+    aid = a["id"]
+
+    # 既読化
+    r = requests.post(f"{BASE}/api/announcements/{aid}/read", headers=h0)
+    check("既読化", r.status_code == 200, r.text)
+    items = requests.get(f"{BASE}/api/announcements", headers=h0).json()
+    a = next(x for x in items if x["id"] == aid)
+    check("既読後は is_read=true", a["is_read"] is True, a)
+
+    # 統計: 投稿権限のないユーザーは403、サイト管理者は人数取得可
+    check("一般ユーザーは統計403",
+          requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=h0).status_code == 403)
+    stats = requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=admin_headers).json()
+    check("サイト管理者は送信対象・既読人数を取得", stats["recipients"] >= 1 and stats["read_count"] >= 1, stats)
+
+    # サイト管理者はサイト全体お知らせの統計を見られる(can_view_stats=true)
+    items_a = requests.get(f"{BASE}/api/announcements", headers=admin_headers).json()
+    aa = next(x for x in items_a if x["id"] == aid)
+    check("サイト管理者は can_view_stats=true", aa["can_view_stats"] is True, aa)
+
+    # 後始末
+    requests.delete(f"{BASE}/api/admin/announcements/{aid}", headers=admin_headers)
+    requests.delete(f"{BASE}/api/rooms/{r1['id']}", headers=h0)
+    requests.delete(f"{BASE}/api/rooms/{r2['id']}", headers=h0)
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
+
+
 def test_dev_mode(users, admin_headers):
     print("[20] 開発者モード(DBブラウザ)")
     h0 = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1488,8 +1541,9 @@ def test_demo_data(users, admin_headers):
     r = requests.post(f"{BASE}/api/dev/demo-data", headers=user_headers)
     check("一般ユーザーは生成不可", r.status_code == 403, r.text)
 
-    # 生成
-    r = requests.post(f"{BASE}/api/dev/demo-data", headers=admin_headers)
+    # 生成(本日のデモイベントをローカル日付に合わせるため date を渡す)
+    today_local = date.today().isoformat()
+    r = requests.post(f"{BASE}/api/dev/demo-data?date={today_local}", headers=admin_headers)
     check("デモデータ生成", r.status_code == 201, r.text)
     counts = r.json()
     check("生成件数が返る",
@@ -1580,6 +1634,7 @@ async def main():
     test_token_binding(users)
     test_user_theme(admin_headers)
     test_leader_admin(users, admin_headers)
+    test_announcement_ext(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

@@ -634,8 +634,10 @@
                 <input type="text" id="ann-title" required maxlength="200">
               </label>
               <label>本文
+                <button type="button" id="ann-hint-btn" class="hint-btn" title="本文で使える変数">?</button>
                 <textarea id="ann-body" rows="2" required maxlength="2000"></textarea>
               </label>
+              <div id="ann-hint" class="ann-hint hidden"></div>
               <button type="submit" class="btn-small">お知らせを投稿</button>
             </form>
             <ul id="admin-announce-list" class="announcement-list"></ul>

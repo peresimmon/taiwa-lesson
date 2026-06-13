@@ -1873,18 +1873,78 @@ function applyMatchingUI() {
   }
 }
 
+/** ダッシュボードのお知らせ一覧キャッシュ(詳細モーダルの前後ナビに使う)。 @type {Array<Object>} */
+let announcementItems = [];
+
+/* お知らせ本文を表示用HTMLに整える。{roomN} はルームへのリンクに置換する。
+   先にHTMLエスケープするので、本文中のタグは無害化される(波括弧はエスケープ対象外) */
+function renderAnnouncementBody(body) {
+  return escapeHtml(body).replace(/\{room(\d+)\}/g, (_m, n) => {
+    const no = parseInt(n, 10);
+    const room = myRooms.find((r) => r.room_no === no);
+    if (room) return `<button class="ev-link" data-room-no="${no}">🎥 ${escapeHtml(room.name)}</button>`;
+    return `<span class="note">🎥 ルーム${no}（見つかりません）</span>`;
+  });
+}
+
 function renderAnnouncements(items) {
+  announcementItems = items;
   $("announcement-list").innerHTML = items.length
     ? items
         .map(
-          (a) => `<li>
-            <div class="a-title">${a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span> ` : ""}${escapeHtml(a.title)}</div>
-            <div class="a-body">${escapeHtml(a.body)}</div>
+          (a, i) => `<li>
+            <div class="a-title">${a.is_read ? "" : '<span class="new-badge">新着</span>'}${a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span> ` : ""}<button class="ev-link ann-link" data-ann-idx="${i}">${escapeHtml(a.title)}</button></div>
+            <div class="a-body a-body-clip">${escapeHtml(a.body)}</div>
             <div class="a-date">${parseUTC(a.created_at).toLocaleDateString("ja-JP")}</div>
           </li>`
         )
         .join("")
     : '<li class="empty-note">お知らせはありません</li>';
+  $("announcement-list").querySelectorAll("[data-ann-idx]").forEach((btn) => {
+    btn.onclick = () => openAnnouncementDetail(parseInt(btn.dataset.annIdx, 10));
+  });
+}
+
+/* お知らせ詳細モーダル。全文表示・前後ナビ・既読化・(権限者には)既読人数を表示 */
+async function openAnnouncementDetail(idx) {
+  const a = announcementItems[idx];
+  if (!a) return;
+  const last = announcementItems.length - 1;
+  const meta = `<div class="ann-detail-meta">
+    ${a.team_name ? `<span class="role-tag listener">${escapeHtml(a.team_name)}</span>` : '<span class="note">サイト全体</span>'}
+    <span class="note">${parseUTC(a.created_at).toLocaleString("ja-JP")}</span>
+  </div>`;
+  const body = `${meta}
+    <div class="ann-detail-body">${renderAnnouncementBody(a.body)}</div>
+    <div id="ann-stats" class="note"></div>`;
+  openModal(a.title, body, [
+    { label: "← 前へ", disabled: idx === 0, onClick: () => openAnnouncementDetail(idx - 1) },
+    { label: "次へ →", disabled: idx === last, onClick: () => openAnnouncementDetail(idx + 1) },
+    { label: "閉じる", onClick: closeModal },
+  ]);
+  // 本文中のルームリンク → ルーム入室モーダル
+  $("modal-body").querySelectorAll("[data-room-no]").forEach((btn) => {
+    btn.onclick = () => {
+      const room = myRooms.find((r) => r.room_no === parseInt(btn.dataset.roomNo, 10));
+      if (room) openRoomModal(room);
+    };
+  });
+  // 既読にする(未読なら)。新着バッジを消すため一覧も再描画
+  if (!a.is_read) {
+    try {
+      await api(`/api/announcements/${a.id}/read`, "POST");
+      a.is_read = true;
+      renderAnnouncements(announcementItems);
+    } catch { /* 既読化に失敗しても表示は続ける */ }
+  }
+  // 投稿権限者には送信対象人数・既読人数を表示
+  if (a.can_view_stats) {
+    try {
+      const s = await api(`/api/announcements/${a.id}/stats`);
+      const el = $("ann-stats");
+      if (el) el.textContent = `👁 既読 ${s.read_count} / 送信対象 ${s.recipients} 人`;
+    } catch { /* 取得できなくても本文は表示する */ }
+  }
 }
 
 function renderPosts(items) {
@@ -3438,6 +3498,24 @@ $("admin-announce-form").onsubmit = async (e) => {
   }
 };
 
+// 本文で使える変数のヒント(?マーク)。現在のルーム番号一覧も表示する
+$("ann-hint-btn").onclick = () => {
+  const box = $("ann-hint");
+  if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
+  const rooms = myRooms.filter((r) => r.room_no != null);
+  const list = rooms.length
+    ? rooms.map((r) => `<li><code>{room${r.room_no}}</code> → ${escapeHtml(r.name)}</li>`).join("")
+    : "<li class='note'>ルームがありません</li>";
+  box.innerHTML = `
+    <p>本文に次の変数を書くと、表示時に置き換わります:</p>
+    <ul>
+      <li><code>{room<b>N</b>}</code> … ルーム番号 <b>N</b> へのリンク(押すとルーム詳細が開きます)</li>
+    </ul>
+    <p class="note">現在のルーム番号:</p>
+    <ul>${list}</ul>`;
+  box.classList.remove("hidden");
+};
+
 // ---- 汎用モーダル ---------------------------------------------------------------
 function openModal(title, bodyHtml, actions) {
   $("modal-title").textContent = title;
@@ -4051,7 +4129,7 @@ $("btn-demo-create").onclick = async () => {
   if (!confirm("デモ用のユーザー・チーム・ルーム・履歴などをメインサイトに生成します。よろしいですか？")) return;
   $("demo-msg").textContent = "生成中…";
   try {
-    const r = await api("/api/dev/demo-data", "POST");
+    const r = await api(`/api/dev/demo-data?date=${todayStr()}`, "POST");
     $("demo-msg").textContent =
       `生成しました: ユーザー${r.users}名 / チーム${r.teams}件 / セッション${r.sessions}回 / ` +
       `投稿${r.posts}件 / イベント${r.events}件 / ルーム${r.rooms}件 / ` +

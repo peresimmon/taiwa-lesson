@@ -100,6 +100,18 @@ class Announcement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AnnouncementRead(Base):
+    """お知らせの既読記録。新着バッジと既読人数の集計に使う"""
+
+    __tablename__ = "announcement_reads"
+    __table_args__ = (UniqueConstraint("announcement_id", "user_id", name="uq_announcement_reads"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    announcement_id: Mapped[int] = mapped_column(ForeignKey("announcements.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Event(Base):
     """イベントカレンダーの予定(ユーザーが登録可能。team_id付きはチーム限定)"""
 
@@ -180,6 +192,8 @@ class Room(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
+    # サイト内で一意の連番(1始まり)。お知らせ本文の {roomN} で参照する表示用ID
+    room_no: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)  # 見える範囲(NULL=全員)
@@ -360,6 +374,15 @@ def _migrate() -> None:
         rm_cols = cols(conn, "rooms")
         if rm_cols and "topic" not in rm_cols:
             conn.execute(text("ALTER TABLE rooms ADD COLUMN topic VARCHAR(200) NOT NULL DEFAULT ''"))
+        if rm_cols and "room_no" not in rm_cols:
+            conn.execute(text("ALTER TABLE rooms ADD COLUMN room_no INTEGER"))
+            # 既存ルームにサイトごとの連番(id順で1始まり)を振る
+            conn.execute(text(
+                "UPDATE rooms SET room_no = ("
+                "  SELECT COUNT(*) FROM rooms r2"
+                "  WHERE r2.site_id = rooms.site_id AND r2.id <= rooms.id"
+                ") WHERE room_no IS NULL"
+            ))
         tm_cols = cols(conn, "teams")
         if tm_cols and "description" not in tm_cols:
             conn.execute(text("ALTER TABLE teams ADD COLUMN description VARCHAR(500) NOT NULL DEFAULT ''"))

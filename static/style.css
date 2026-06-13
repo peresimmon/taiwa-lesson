@@ -449,6 +449,36 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .announcement-list .a-title { font-weight: 600; font-size: 0.95rem; color: var(--primary-dark); }
 .announcement-list .a-body { font-size: 0.86rem; color: var(--muted); margin-top: 4px; line-height: 1.7; }
 .announcement-list .a-date { font-size: 0.73rem; color: var(--muted); margin-top: 2px; }
+/* ダッシュボードの本文は2行で省略表示(クリックで全文) */
+.a-body-clip {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ann-link { font-weight: 600; color: var(--primary-dark); }
+/* 未読の新着バッジ */
+.new-badge {
+  display: inline-block; background: var(--accent); color: var(--on-accent);
+  font-size: 0.66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-right: 6px;
+}
+/* お知らせ詳細モーダル */
+.ann-detail-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.ann-detail-body { white-space: pre-wrap; line-height: 1.9; word-break: break-word; margin-bottom: 12px; }
+#ann-stats:not(:empty) {
+  border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 6px; font-weight: 600;
+}
+/* 本文の変数ヒント */
+.hint-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 6px; padding: 0;
+  border: 1.5px solid var(--border); border-radius: 50%; background: var(--card);
+  color: var(--muted); font-size: 0.72rem; font-weight: 700; cursor: pointer; font-family: inherit;
+}
+.hint-btn:hover { border-color: var(--primary); color: var(--primary); }
+.ann-hint {
+  background: var(--warm); border: 1.5px solid var(--warm-dark); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 10px; font-size: 0.82rem; line-height: 1.7;
+}
+.ann-hint ul { padding-left: 18px; margin: 4px 0; }
+.ann-hint code { background: var(--bg); padding: 1px 5px; border-radius: 5px; }
 
 /* カレンダー */
 .cal-header {
