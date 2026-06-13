@@ -122,6 +122,12 @@
         </div>
       </div>
 
+      <!-- 本日の予定(今日のイベントだけを上部に表示) -->
+      <div class="panel panel-wide today-panel hidden" id="today-panel">
+        <h3>📅 本日の予定</h3>
+        <ul id="today-event-list" class="today-event-list"></ul>
+      </div>
+
       <!-- ルーム(カード表示。タップで詳細モーダルへ) -->
       <div class="panel panel-wide" id="rooms-panel">
         <h3>ルーム <button id="btn-room-new" class="btn-small hidden" style="float:right">ルームを作成</button></h3>
@@ -790,6 +796,13 @@
             <label class="checkbox-label"><input type="checkbox" id="room-mode-camera"> 実映像</label>
           </div>
         </div>
+        <div class="setting-group">
+          <div class="setting-group-title">出欠制マッチング（朝会など）</div>
+          <label class="checkbox-label"><input type="checkbox" id="room-attendance"> 出欠制にする</label>
+          <p class="note">ONにすると、その日にこのルームへ紐づくイベントで「参加」を選んだ人だけが
+            入室・マッチングできます。チーム（見える範囲）と本日のイベントを組み合わせて、
+            参加可能なメンバーだけをランダムにマッチングできます。</p>
+        </div>
         <div id="room-managers-wrap" class="hidden">
           <div class="setting-group-title">ルーム管理者（設定を変更できるユーザー）</div>
           <div class="inline-form">
@@ -812,9 +825,14 @@
     <div class="overlay-box">
       <h3>イベントを作成</h3>
       <form id="event-form">
-        <label>日付
-          <input type="date" id="event-date" required>
-        </label>
+        <div class="form-row">
+          <label>日付
+            <input type="date" id="event-date" required>
+          </label>
+          <label>時刻（任意）
+            <input type="time" id="event-time">
+          </label>
+        </div>
         <label>イベント名
           <input type="text" id="event-title" required maxlength="200" placeholder="例: みんなで傾聴会">
         </label>

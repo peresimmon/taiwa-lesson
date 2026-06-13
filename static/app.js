@@ -286,6 +286,12 @@ function wsSend(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
 }
 
+/* クライアントのローカル日付(YYYY-MM-DD)。出欠制ルームの本日判定に使う */
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 async function handleWSMessage(msg) {
   switch (msg.type) {
     case "queued": {
@@ -1621,9 +1627,76 @@ async function loadDashboard() {
     await loadRooms();
     renderPosts(await fetchPosts());
     await loadEvents();
+    await loadTodayEvents();
   } catch (err) {
     $("lobby-error").textContent = err.message;
   }
+}
+
+/* 本日の予定バナー(heroとルームの間)。ルーム連携があれば押下で入室モーダル、
+   RSVP(参加/不参加)も切り替えられる */
+async function loadTodayEvents() {
+  let events = [];
+  try {
+    events = await api(`/api/events/today?date=${todayStr()}`);
+  } catch { /* 取得できなくてもダッシュボードは表示する */ }
+  $("today-panel").classList.toggle("hidden", events.length === 0);
+  if (!events.length) return;
+  renderTodayEvents(events);
+}
+
+function renderTodayEvents(events) {
+  $("today-event-list").innerHTML = events
+    .map((e) => {
+      const time = e.start_time
+        ? `<span class="today-time">${e.start_time}</span>`
+        : `<span class="today-time allday">終日</span>`;
+      const sub = [
+        e.room_name ? `🎥 ${escapeHtml(e.room_name)}` : "",
+        e.room_attendance_required ? "出欠制" : "",
+        `参加予定 ${e.yes_count}人`,
+      ].filter(Boolean).join(" ・ ");
+      const join = e.room_id && e.room_name
+        ? `<button class="today-join" data-evroom="${e.room_id}">入室する</button>`
+        : "";
+      const rsvp = `<span class="rsvp-group">
+          <button class="rsvp-btn yes ${e.my_attendance === "yes" ? "active" : ""}" data-rsvp="${e.id}" data-status="yes">参加</button>
+          <button class="rsvp-btn no ${e.my_attendance === "no" ? "active" : ""}" data-rsvp="${e.id}" data-status="no">不参加</button>
+        </span>`;
+      return `<li>
+        ${time}
+        <span class="today-main">
+          <span class="today-title">${escapeHtml(e.title)}</span>
+          <span class="today-sub">${sub}</span>
+        </span>
+        <span class="today-actions">${rsvp}${join}</span>
+      </li>`;
+    })
+    .join("");
+
+  // ルーム連携イベントの「入室する」で入室モーダルを開く
+  $("today-event-list").querySelectorAll("[data-evroom]").forEach((btn) => {
+    btn.onclick = () => {
+      const rid = parseInt(btn.dataset.evroom, 10);
+      const room = myRooms.find((r) => r.id === rid);
+      if (room) {
+        openRoomModal(room);
+      } else {
+        $("lobby-error").textContent = "ルームが見つかりません(削除されたか、参加権限がありません)";
+      }
+    };
+  });
+  // RSVP(参加/不参加)の切り替え
+  $("today-event-list").querySelectorAll("[data-rsvp]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/events/${btn.dataset.rsvp}/attendance`, "POST", { status: btn.dataset.status });
+        await loadTodayEvents();
+      } catch (err) {
+        $("lobby-error").textContent = err.message;
+      }
+    };
+  });
 }
 
 /* サーバーのUTC日時文字列をDateに変換(オフセット表記が無ければUTCとみなす) */
@@ -1871,7 +1944,7 @@ async function loadTeamScreenEvents() {
     ? events
         .map(
           (e) => `<li>
-            <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}</span>
+            <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}${e.start_time ? ` ${e.start_time}` : ""}</span>
             <span>${escapeHtml(e.title)}</span>
             <span class="e-user">by ${escapeHtml(e.username)}</span>
           </li>`
@@ -2043,9 +2116,12 @@ function openRoomModal(room) {
       <li><span>マッチング</span><strong>${room.role_matching ? "話し手×聞き手" : "役割なし"}</strong></li>
       <li><span>表示モード</span><strong>${modeNames}</strong></li>
       ${room.team_name ? `<li><span>参加できる人</span><strong>${escapeHtml(room.team_name)}のメンバー</strong></li>` : ""}
+      ${room.attendance_required ? `<li><span>出欠制</span><strong>本日のイベントで「参加」した人のみ</strong></li>` : ""}
       <li><span>作成者</span><strong>${escapeHtml(room.creator)}</strong></li>
       ${room.expires_at ? `<li><span>有効期限</span><strong>${parseUTC(room.expires_at).toLocaleString("ja-JP")}</strong></li>` : ""}
     </ul>
+    ${room.attendance_required ? `<p class="note">📅 このルームは出欠制です。本日このルームに紐づくイベントで
+      「参加」を選んだメンバーだけが入室でき、その人どうしでマッチングされます。</p>` : ""}
     ${room.has_passphrase ? `<label>このルームには合言葉が必要です
       <input type="text" id="room-pass-input" maxlength="100" placeholder="合言葉を入力" autocomplete="off">
     </label>` : ""}
@@ -2078,7 +2154,7 @@ async function startRoomMatching(room, role) {
   };
   try {
     if (!ws) await connectWS();
-    wsSend({ type: "join_queue", role, room_id: room.id, passphrase });
+    wsSend({ type: "join_queue", role, room_id: room.id, passphrase, date: todayStr() });
     closeModal();
   } catch (err) {
     $("room-join-error").textContent = err.message;
@@ -2110,6 +2186,7 @@ function openRoomForm(room) {
   for (const m of ["toon", "real", "still", "camera"]) {
     $(`room-mode-${m}`).checked = override ? room.raw.modes.includes(m) : m !== "camera";
   }
+  $("room-attendance").checked = !!(room && room.raw && room.raw.attendance_required);
   // ルーム管理者(編集時のみ)
   $("room-managers-wrap").classList.toggle("hidden", !room);
   if (room && room.managers) {
@@ -2168,6 +2245,7 @@ $("room-form").onsubmit = async (e) => {
     modes: $("room-modes-override").checked
       ? ["toon", "real", "still", "camera"].filter((m) => $(`room-mode-${m}`).checked)
       : null,
+    attendance_required: $("room-attendance").checked,
   };
   try {
     if (editingRoomId) {
@@ -2223,7 +2301,7 @@ function renderEventList() {
     ? monthEvents
         .map(
           (e) => `<li>
-            <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}</span>
+            <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}${e.start_time ? ` ${e.start_time}` : ""}</span>
             <span>${escapeHtml(e.title)}${e.room_id && e.room_name ? ` <button class="btn-text" data-evroom="${e.room_id}">🎥${escapeHtml(e.room_name)}</button>` : ""}</span>
             <span class="e-user">by ${escapeHtml(e.username)}</span>
           </li>`
@@ -2259,6 +2337,7 @@ $("cal-next").onclick = () => {
 function openEventModal(date) {
   $("event-form-error").textContent = "";
   $("event-date").value = date || "";
+  $("event-time").value = "";
   $("event-title").value = "";
   $("event-scope-modal").value =
     eventScope && [...$("event-scope-modal").options].some((o) => o.value === eventScope)
@@ -2280,6 +2359,7 @@ $("event-form").onsubmit = async (e) => {
     await api("/api/events", "POST", {
       title: $("event-title").value.trim(),
       date: $("event-date").value,
+      start_time: $("event-time").value || null,
       team_id: scope ? parseInt(scope, 10) : null,
       room_id: $("event-room").value ? parseInt($("event-room").value, 10) : null,
     });
@@ -2291,6 +2371,7 @@ $("event-form").onsubmit = async (e) => {
     calYear = y;
     calMonth = m - 1;
     await loadEvents();
+    await loadTodayEvents();
   } catch (err) {
     $("event-form-error").textContent = err.message;
   }

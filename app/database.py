@@ -97,6 +97,20 @@ class Event(Base):
     room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id"), nullable=True)  # ルーム連携
     title: Mapped[str] = mapped_column(String(200))
     date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    start_time: Mapped[str | None] = mapped_column(String(5), nullable=True)  # "HH:MM"(任意)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EventAttendance(Base):
+    """イベントへの参加可否(RSVP)。出欠制ルームのマッチング対象を決める"""
+
+    __tablename__ = "event_attendance"
+    __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_event_attendance"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(10), default="yes")  # "yes" | "no"
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -158,6 +172,9 @@ class Room(Base):
     role_matching: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     modes: Mapped[str | None] = mapped_column(String(100), nullable=True)  # "toon,real"等のCSV
     topic: Mapped[str] = mapped_column(String(200), default="")  # 話題カード(空=なし)
+    # 出欠制マッチング(朝会など): ONだと、その日にこのルームへ紐づくイベントに
+    # 「参加(yes)」とRSVPしたメンバーだけが待機列に入れる
+    attendance_required: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -293,6 +310,11 @@ def _migrate() -> None:
         ev_cols = cols(conn, "events")
         if ev_cols and "room_id" not in ev_cols:
             conn.execute(text("ALTER TABLE events ADD COLUMN room_id INTEGER"))
+        if ev_cols and "start_time" not in ev_cols:
+            conn.execute(text("ALTER TABLE events ADD COLUMN start_time VARCHAR(5)"))
+        rm2_cols = cols(conn, "rooms")
+        if rm2_cols and "attendance_required" not in rm2_cols:
+            conn.execute(text("ALTER TABLE rooms ADD COLUMN attendance_required BOOLEAN NOT NULL DEFAULT 0"))
         if user_cols and "email" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
         if user_cols and "display_name" not in user_cols:

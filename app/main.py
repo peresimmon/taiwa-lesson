@@ -26,6 +26,7 @@ from .database import (
     Block,
     CallPair,
     Event,
+    EventAttendance,
     Post,
     Report,
     Room,
@@ -325,8 +326,13 @@ class WarningIn(BaseModel):
 class EventIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")  # "HH:MM"(任意)
     team_id: int | None = None  # 指定するとチーム限定の予定
     room_id: int | None = None  # ルーム連携(予定からルームに参加できる)
+
+
+class AttendanceIn(BaseModel):
+    status: str = Field(pattern=r"^(yes|no)$")  # 参加可否(RSVP)
 
 
 class PostIn(BaseModel):
@@ -383,6 +389,7 @@ class RoomIn(BaseModel):
     role_matching: bool | None = None
     modes: list[str] | None = None  # Noneでサイト設定に従う
     topic: str = Field(default="", max_length=200)  # 話題カード(空=なし)
+    attendance_required: bool = False  # 出欠制マッチング(朝会など)
 
 
 class RoomManagerIn(BaseModel):
@@ -1180,6 +1187,39 @@ def _room_visible(db: Session, user: User, room: Room) -> bool:
     return _membership(db, room.team_id, user.id) is not None
 
 
+def _attendance_gate_error(db: Session, user: User, room: Room, date: str) -> str | None:
+    """出欠制ルーム(朝会など)の入室可否を判定する。入れる場合はNone、
+    入れない場合は理由メッセージを返す。
+
+    その日にこのルームへ紐づくイベントに「参加(yes)」とRSVPした人だけが入れる。
+    → 参加可能なメンバーのみが待機列に入るため、自然とその人どうしでマッチングされる。
+    """
+    if not room.attendance_required:
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date or ""):
+        return "本日の日付が不明です"
+    today_events = (
+        db.query(Event)
+        .filter(Event.room_id == room.id, Event.date == date)
+        .all()
+    )
+    if not today_events:
+        return "本日このルームの開催予定（イベント）がありません"
+    event_ids = [e.id for e in today_events]
+    yes = (
+        db.query(EventAttendance)
+        .filter(
+            EventAttendance.event_id.in_(event_ids),
+            EventAttendance.user_id == user.id,
+            EventAttendance.status == "yes",
+        )
+        .first()
+    )
+    if yes is None:
+        return "本日の出欠が「参加」になっていません。イベントから参加を選んでください"
+    return None
+
+
 def _site_modes(db: Session, site_id: int) -> list[str]:
     return [m for m in VIDEO_MODES if get_setting(db, site_id, f"mode_{m}") == "true"]
 
@@ -1211,6 +1251,7 @@ def _room_payload(db: Session, user: User, room: Room) -> dict:
         "role_matching": eff_rm,
         "modes": {m: m in eff_modes for m in VIDEO_MODES},
         "can_manage": can_manage,
+        "attendance_required": bool(room.attendance_required),
         # 編集フォーム用の生値(管理者のみ)
         "topic": room.topic,
         "raw": {
@@ -1219,6 +1260,7 @@ def _room_payload(db: Session, user: User, room: Room) -> dict:
             "role_matching": room.role_matching,
             "modes": room.modes.split(",") if room.modes else None,
             "topic": room.topic,
+            "attendance_required": bool(room.attendance_required),
         } if can_manage else None,
         "managers": [
             {"user_id": m.user_id, "username": name, "display_name": dn or name}
@@ -1252,6 +1294,7 @@ def _apply_room_settings(db: Session, user: User, room: Room, body: RoomIn) -> N
     room.role_matching = body.role_matching
     room.modes = ",".join(body.modes) if body.modes is not None else None
     room.topic = body.topic.strip()
+    room.attendance_required = body.attendance_required
 
 
 @app.get("/api/rooms")
@@ -1393,6 +1436,49 @@ def announcements(user: User = Depends(active_user), db: Session = Depends(get_d
     ]
 
 
+def _event_payloads(db: Session, user: User, rows: list) -> list[dict]:
+    """(Event, username, display_name) の行をAPI用の辞書に変換する。
+    ルーム名・時刻・出欠状況(自分のRSVP・参加予定人数)を添える"""
+    from sqlalchemy import func
+
+    events = [e for e, _, _ in rows]
+    event_ids = [e.id for e in events]
+    room_ids = {e.room_id for e in events if e.room_id}
+    rooms = {
+        r.id: r
+        for r in db.query(Room).filter(Room.id.in_(room_ids)).all()
+    } if room_ids else {}
+    # 各イベントの「参加(yes)」人数
+    yes_counts = dict(
+        db.query(EventAttendance.event_id, func.count(EventAttendance.id))
+        .filter(EventAttendance.event_id.in_(event_ids), EventAttendance.status == "yes")
+        .group_by(EventAttendance.event_id)
+        .all()
+    ) if event_ids else {}
+    # 自分のRSVP
+    my_status = dict(
+        db.query(EventAttendance.event_id, EventAttendance.status)
+        .filter(EventAttendance.event_id.in_(event_ids), EventAttendance.user_id == user.id)
+        .all()
+    ) if event_ids else {}
+    out = []
+    for e, name, dn in rows:
+        room = rooms.get(e.room_id)
+        out.append({
+            "id": e.id,
+            "title": e.title,
+            "date": e.date,
+            "start_time": e.start_time,
+            "username": dn or name,
+            "room_id": e.room_id,
+            "room_name": room.name if room else None,
+            "room_attendance_required": bool(room.attendance_required) if room else False,
+            "my_attendance": my_status.get(e.id),
+            "yes_count": yes_counts.get(e.id, 0),
+        })
+    return out
+
+
 @app.get("/api/events")
 def list_events(
     month: str,
@@ -1413,24 +1499,66 @@ def list_events(
         q = q.filter(Event.team_id == team_id)
     else:
         q = q.filter(Event.team_id.is_(None))
-    rows = q.order_by(Event.date).all()
-    # ルーム連携している予定にはルーム名を添える
-    room_ids = {e.room_id for e, _, _ in rows if e.room_id}
-    room_names = {
-        r.id: r.name
-        for r in db.query(Room).filter(Room.id.in_(room_ids)).all()
-    } if room_ids else {}
-    return [
-        {
-            "id": e.id,
-            "title": e.title,
-            "date": e.date,
-            "username": dn or name,
-            "room_id": e.room_id,
-            "room_name": room_names.get(e.room_id),
-        }
-        for e, name, dn in rows
+    rows = q.order_by(Event.date, Event.start_time).all()
+    return _event_payloads(db, user, rows)
+
+
+@app.get("/api/events/today")
+def list_today_events(
+    date: str,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """本日の予定(サイト全体 + 自分の所属チーム)。ダッシュボード上部のバナー用。
+    dateはクライアントのローカル日付(YYYY-MM-DD)を渡す"""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise HTTPException(status_code=422, detail="dateはYYYY-MM-DD形式で指定してください")
+    my_team_ids = [
+        m.team_id for m in db.query(TeamMember).filter(TeamMember.user_id == user.id).all()
     ]
+    q = (
+        db.query(Event, User.username, User.display_name)
+        .join(User, Event.user_id == User.id)
+        .filter(User.site_id == user.site_id, Event.date == date)
+    )
+    # 自分に見える予定: サイト全体(team_idなし) または 所属チームの予定
+    if my_team_ids:
+        q = q.filter((Event.team_id.is_(None)) | (Event.team_id.in_(my_team_ids)))
+    else:
+        q = q.filter(Event.team_id.is_(None))
+    rows = q.order_by(Event.start_time, Event.id).all()
+    return _event_payloads(db, user, rows)
+
+
+@app.post("/api/events/{event_id}/attendance")
+def set_attendance(
+    event_id: int,
+    body: AttendanceIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """イベントへの参加可否(RSVP)を登録/更新する。出欠制ルームのマッチング対象になる"""
+    event = db.get(Event, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="イベントが存在しません")
+    author = db.get(User, event.user_id)
+    if author is None or author.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="イベントが存在しません")
+    # チーム限定イベントは、そのチームのメンバー(とサイト管理者)のみRSVPできる
+    if event.team_id:
+        _require_team_member(db, user, event.team_id)
+    rec = (
+        db.query(EventAttendance)
+        .filter(EventAttendance.event_id == event_id, EventAttendance.user_id == user.id)
+        .first()
+    )
+    if rec is None:
+        rec = EventAttendance(event_id=event_id, user_id=user.id, status=body.status)
+        db.add(rec)
+    else:
+        rec.status = body.status
+    db.commit()
+    return {"ok": True, "status": body.status}
 
 
 @app.post("/api/events", status_code=201)
@@ -1446,7 +1574,7 @@ def create_event(
         if not _room_visible(db, user, room):
             raise HTTPException(status_code=403, detail="このルームには参加できません")
     event = Event(
-        user_id=user.id, title=body.title, date=body.date,
+        user_id=user.id, title=body.title, date=body.date, start_time=body.start_time,
         team_id=body.team_id, room_id=body.room_id,
     )
     db.add(event)
@@ -1906,6 +2034,12 @@ def admin_delete_user(
     if target.role in ("site_admin", "system_admin"):
         raise HTTPException(status_code=400, detail="管理者ユーザーは削除できません")
     db.query(Survey).filter(Survey.user_id == user_id).delete()
+    own_event_ids = [e.id for e in db.query(Event).filter(Event.user_id == user_id).all()]
+    if own_event_ids:
+        db.query(EventAttendance).filter(
+            EventAttendance.event_id.in_(own_event_ids)
+        ).delete(synchronize_session=False)
+    db.query(EventAttendance).filter(EventAttendance.user_id == user_id).delete()
     db.query(Event).filter(Event.user_id == user_id).delete()
     db.query(Post).filter(Post.user_id == user_id).delete()
     db.query(TeamMember).filter(TeamMember.user_id == user_id).delete()
@@ -2070,6 +2204,11 @@ def admin_delete_team(
     team = _team_or_404(db, admin, team_id)
     db.query(TeamMember).filter(TeamMember.team_id == team_id).delete(synchronize_session=False)
     db.query(Post).filter(Post.team_id == team_id).delete(synchronize_session=False)
+    team_event_ids = [e.id for e in db.query(Event).filter(Event.team_id == team_id).all()]
+    if team_event_ids:
+        db.query(EventAttendance).filter(
+            EventAttendance.event_id.in_(team_event_ids)
+        ).delete(synchronize_session=False)
     db.query(Event).filter(Event.team_id == team_id).delete(synchronize_session=False)
     db.delete(team)
     audit(db, admin, "team_delete", team.name)
@@ -2174,6 +2313,14 @@ def _delete_site_data(db: Session, site: Site) -> None:
     user_ids = [u.id for u in db.query(User).filter(User.site_id == site_id).all()]
     if user_ids:
         db.query(Survey).filter(Survey.user_id.in_(user_ids)).delete(synchronize_session=False)
+        site_event_ids = [e.id for e in db.query(Event).filter(Event.user_id.in_(user_ids)).all()]
+        if site_event_ids:
+            db.query(EventAttendance).filter(
+                EventAttendance.event_id.in_(site_event_ids)
+            ).delete(synchronize_session=False)
+        db.query(EventAttendance).filter(
+            EventAttendance.user_id.in_(user_ids)
+        ).delete(synchronize_session=False)
         db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
@@ -2406,10 +2553,13 @@ def create_demo_data(
         )
     db.add(Post(user_id=demo_users[0].id, team_id=teams[0].id, body="(チーム限定)今月の目標は「最後まで聴く」です"))
 
-    # イベント(今月の予定)
+    # イベント(今月の予定。一部は時刻つき)
     for i, title in enumerate(DEMO_EVENTS):
         date = (now + timedelta(days=2 + i * 5)).date().isoformat()
-        db.add(Event(user_id=random.choice(demo_users).id, title=title, date=date))
+        db.add(Event(
+            user_id=random.choice(demo_users).id, title=title, date=date,
+            start_time=["10:00", "14:00", "16:30", None][i % 4],
+        ))
 
     # ルームとお知らせ
     db.add(
@@ -2420,6 +2570,33 @@ def create_demo_data(
             topic="最近うれしかったこと",
         )
     )
+
+    # 朝会の例: 営業チーム限定・出欠制マッチングのルーム + 本日のイベント。
+    # チームメンバーの一部が「参加」、入室するとその人どうしでランダムにマッチングされる
+    morning_room = Room(
+        site_id=sid,
+        creator_id=demo_users[0].id,
+        name="デモ_朝会ルーム",
+        team_id=teams[0].id,
+        topic="昨日の学び・今日やること",
+        session_minutes=5,
+        attendance_required=True,
+    )
+    db.add(morning_room)
+    db.flush()
+    morning_event = Event(
+        user_id=demo_users[0].id, title="営業チーム 朝会",
+        date=now.date().isoformat(), start_time="09:00",
+        team_id=teams[0].id, room_id=morning_room.id,
+    )
+    db.add(morning_event)
+    db.flush()
+    # 営業チーム5人のうち先頭4人が「参加」、1人は「不参加」
+    for j, m in enumerate(team_defs[0][1]):
+        db.add(EventAttendance(
+            event_id=morning_event.id, user_id=m.id,
+            status="no" if j == 4 else "yes",
+        ))
     db.add(
         Announcement(
             site_id=sid,
@@ -2516,6 +2693,14 @@ def delete_demo_data(
             or_(CallPair.user_a.in_(user_ids), CallPair.user_b.in_(user_ids))
         ).delete(synchronize_session=False)
         db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
+        demo_event_ids = [e.id for e in db.query(Event).filter(Event.user_id.in_(user_ids)).all()]
+        if demo_event_ids:
+            db.query(EventAttendance).filter(
+                EventAttendance.event_id.in_(demo_event_ids)
+            ).delete(synchronize_session=False)
+        db.query(EventAttendance).filter(
+            EventAttendance.user_id.in_(user_ids)
+        ).delete(synchronize_session=False)
         db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Block).filter(
@@ -2623,6 +2808,8 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
                             join_error = "合言葉が違います"
                         elif room.capacity and manager.room_participants(user.site_id, room_id) >= room.capacity:
                             join_error = "このルームは満員です"
+                        elif _attendance_gate_error(sdb, user, room, str(msg.get("date") or "")):
+                            join_error = _attendance_gate_error(sdb, user, room, str(msg.get("date") or ""))
                         else:
                             if room.role_matching is not None:
                                 role_matching = room.role_matching  # ルーム設定がサイト設定より優先

@@ -611,6 +611,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .event-room-select { float: none; max-width: 140px; flex: 0 0 auto; }
 
+/* フォームの横並び(日付+時刻など) */
+.form-row { display: flex; gap: 12px; }
+.form-row label { flex: 1; }
+
+/* 本日の予定バナー */
+.today-panel { border-left: 4px solid var(--accent); }
+.today-event-list { list-style: none; }
+.today-event-list li {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 0; border-bottom: 1px dashed var(--border);
+}
+.today-event-list li:last-child { border-bottom: none; }
+.today-time {
+  font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
+  min-width: 48px;
+}
+.today-time.allday { font-size: 0.78rem; font-weight: 600; color: var(--muted); }
+.today-main { flex: 1; min-width: 160px; }
+.today-title { font-weight: 600; }
+.today-sub { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+.today-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.today-join {
+  background: var(--accent); color: var(--on-accent); border: none;
+  padding: 7px 16px; border-radius: 999px; font-size: 0.85rem; font-weight: 700;
+  cursor: pointer; font-family: inherit; transition: background 0.15s;
+}
+.today-join:hover { background: var(--accent-dark); }
+.rsvp-group { display: flex; gap: 4px; }
+.rsvp-btn {
+  border: 1.5px solid var(--border); background: var(--card); color: var(--muted);
+  padding: 6px 12px; border-radius: 999px; font-size: 0.82rem;
+  cursor: pointer; font-family: inherit; transition: all 0.15s;
+}
+.rsvp-btn:hover { border-color: var(--primary); }
+.rsvp-btn.yes.active { background: var(--success); border-color: var(--success); color: #fff; }
+.rsvp-btn.no.active { background: var(--danger); border-color: var(--danger); color: #fff; }
+.rsvp-count { font-size: 0.76rem; color: var(--muted); white-space: nowrap; }
+
 /* ルームカード */
 .room-cards {
   display: grid;

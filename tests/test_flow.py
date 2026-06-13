@@ -16,6 +16,7 @@ import asyncio
 import json
 import secrets
 import sys
+from datetime import date
 
 import requests
 import websockets
@@ -1073,6 +1074,92 @@ def test_team_v2_and_profile(users, admin_headers):
     requests.delete(f"{BASE}/api/admin/users/{out_id}", headers=admin_headers)
 
 
+async def test_events_attendance(users, admin_headers):
+    print("[18] イベント時刻・本日の予定・RSVP・出欠制マッチング")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}
+    suffix = secrets.token_hex(3)
+    today = date.today().isoformat()
+
+    # 時刻つきイベント + 時刻バリデーション
+    r = requests.post(f"{BASE}/api/events", headers=h0,
+                      json={"title": f"朝会_{suffix}", "date": today, "start_time": "09:30"})
+    check("時刻つきイベント作成", r.status_code == 201, r.text)
+    r = requests.post(f"{BASE}/api/events", headers=h0,
+                      json={"title": "不正な時刻", "date": today, "start_time": "9:30"})
+    check("時刻形式エラーは422", r.status_code == 422, r.text)
+
+    # 本日の予定
+    r = requests.get(f"{BASE}/api/events/today?date={today}", headers=h0)
+    today_events = r.json()
+    ev = next((e for e in today_events if e["title"] == f"朝会_{suffix}"), None)
+    check("本日の予定に時刻つきで出る",
+          r.status_code == 200 and ev is not None and ev["start_time"] == "09:30", today_events)
+    r = requests.get(f"{BASE}/api/events/today?date=bad", headers=h0)
+    check("today date形式エラーは422", r.status_code == 422, r.text)
+
+    # 出欠制ルーム(朝会)を作る。作成者をモデレータに昇格
+    r = requests.get(f"{BASE}/api/me", headers=h0)
+    uid0 = r.json()["id"]
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "moderator"})
+    r = requests.post(f"{BASE}/api/rooms", headers=h0, json={
+        "name": f"朝会ルーム_{suffix}", "role_matching": False, "attendance_required": True,
+    })
+    check("出欠制ルーム作成", r.status_code == 201, r.text)
+    room = r.json()
+    rid = room["id"]
+    r = requests.get(f"{BASE}/api/rooms", headers=h0)
+    rm = next(x for x in r.json() if x["id"] == rid)
+    check("ルームに出欠制フラグが返る", rm["attendance_required"] is True, rm)
+
+    # 本日のイベントをこのルームに紐づける
+    r = requests.post(f"{BASE}/api/events", headers=h0,
+                      json={"title": f"朝会本体_{suffix}", "date": today,
+                            "start_time": "09:00", "room_id": rid})
+    eid = r.json()["id"]
+    check("ルーム連携の本日イベント作成", r.status_code == 201, r.text)
+
+    # 出欠ゲート: RSVP無しのユーザーは入れない
+    ws_no = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws_no.send(json.dumps({"type": "join_queue", "room_id": rid, "date": today}))
+    err = await recv_type(ws_no, "error")
+    check("RSVPなしは出欠制ルームに入れない", "出欠" in err["message"], err)
+    await ws_no.close()
+
+    # user1が「参加」をRSVP
+    r = requests.post(f"{BASE}/api/events/{eid}/attendance", headers=h1, json={"status": "yes"})
+    check("RSVP(参加)を登録", r.status_code == 200, r.text)
+    r = requests.get(f"{BASE}/api/events/today?date={today}", headers=h1)
+    ev = next(e for e in r.json() if e["id"] == eid)
+    check("RSVP後にmy_attendance=yes・参加人数1", ev["my_attendance"] == "yes" and ev["yes_count"] == 1, ev)
+
+    # 参加にした user1 は待機列に入れる
+    ws_yes = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws_yes.send(json.dumps({"type": "join_queue", "room_id": rid, "date": today}))
+    q = await recv_type(ws_yes, "queued")
+    check("RSVP参加なら出欠制ルームで待機できる", q["room_id"] == rid, q)
+    await ws_yes.close()
+
+    # 「不参加」に変えると入れない
+    r = requests.post(f"{BASE}/api/events/{eid}/attendance", headers=h1, json={"status": "no"})
+    check("RSVPを不参加に変更", r.status_code == 200, r.text)
+    ws_no2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+    await ws_no2.send(json.dumps({"type": "join_queue", "room_id": rid, "date": today}))
+    err = await recv_type(ws_no2, "error")
+    check("不参加に変えると入れない", "出欠" in err["message"], err)
+    await ws_no2.close()
+
+    # RSVPのバリデーションと存在チェック
+    r = requests.post(f"{BASE}/api/events/{eid}/attendance", headers=h1, json={"status": "maybe"})
+    check("不正なRSVPは422", r.status_code == 422, r.text)
+    r = requests.post(f"{BASE}/api/events/999999/attendance", headers=h1, json={"status": "yes"})
+    check("存在しないイベントへのRSVPは404", r.status_code == 404, r.text)
+
+    # 後始末
+    requests.delete(f"{BASE}/api/rooms/{rid}", headers=h0)
+    requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
+
+
 def test_demo_data(users, admin_headers):
     print("[17] デモデータ生成・削除")
     user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1152,6 +1239,7 @@ async def main():
     await test_call_experience(users, admin_headers)
     await test_trust_safety(users, admin_headers)  # ブロックを作るため最後に実行
     test_team_v2_and_profile(users, admin_headers)
+    await test_events_attendance(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
