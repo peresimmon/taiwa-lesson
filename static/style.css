@@ -615,6 +615,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .form-row { display: flex; gap: 12px; }
 .form-row label { flex: 1; }
 
+/* 繰り返しイベントの目印 */
+.recur-tag { margin-right: 3px; font-size: 0.85em; cursor: help; }
+
 /* 本日の予定バナー */
 .today-panel { border-left: 4px solid var(--accent); }
 .today-event-list { list-style: none; }

@@ -98,6 +98,10 @@ class Event(Base):
     title: Mapped[str] = mapped_column(String(200))
     date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
     start_time: Mapped[str | None] = mapped_column(String(5), nullable=True)  # "HH:MM"(任意)
+    # 繰り返し: 同じシリーズの各回は同じseries_idでまとめる(単発はNULL)。
+    # recurrenceは表示用ラベル("毎日"/"平日"/"毎週月"/"毎月15日"など)
+    series_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    recurrence: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -312,6 +316,10 @@ def _migrate() -> None:
             conn.execute(text("ALTER TABLE events ADD COLUMN room_id INTEGER"))
         if ev_cols and "start_time" not in ev_cols:
             conn.execute(text("ALTER TABLE events ADD COLUMN start_time VARCHAR(5)"))
+        if ev_cols and "series_id" not in ev_cols:
+            conn.execute(text("ALTER TABLE events ADD COLUMN series_id VARCHAR(32)"))
+        if ev_cols and "recurrence" not in ev_cols:
+            conn.execute(text("ALTER TABLE events ADD COLUMN recurrence VARCHAR(20)"))
         rm2_cols = cols(conn, "rooms")
         if rm2_cols and "attendance_required" not in rm2_cols:
             conn.execute(text("ALTER TABLE rooms ADD COLUMN attendance_required BOOLEAN NOT NULL DEFAULT 0"))

@@ -1652,12 +1652,16 @@ function renderTodayEvents(events) {
         ? `<span class="today-time">${e.start_time}</span>`
         : `<span class="today-time allday">終日</span>`;
       const sub = [
+        e.recurrence ? `🔁 ${escapeHtml(e.recurrence)}` : "",
         e.room_name ? `🎥 ${escapeHtml(e.room_name)}` : "",
         e.room_attendance_required ? "出欠制" : "",
         `参加予定 ${e.yes_count}人`,
       ].filter(Boolean).join(" ・ ");
       const join = e.room_id && e.room_name
         ? `<button class="today-join" data-evroom="${e.room_id}">入室する</button>`
+        : "";
+      const del = e.can_delete
+        ? `<button class="btn-text danger" data-evdelete="${e.id}">削除</button>`
         : "";
       const rsvp = `<span class="rsvp-group">
           <button class="rsvp-btn yes ${e.my_attendance === "yes" ? "active" : ""}" data-rsvp="${e.id}" data-status="yes">参加</button>
@@ -1669,7 +1673,7 @@ function renderTodayEvents(events) {
           <span class="today-title">${escapeHtml(e.title)}</span>
           <span class="today-sub">${sub}</span>
         </span>
-        <span class="today-actions">${rsvp}${join}</span>
+        <span class="today-actions">${rsvp}${join}${del}</span>
       </li>`;
     })
     .join("");
@@ -1696,6 +1700,10 @@ function renderTodayEvents(events) {
         $("lobby-error").textContent = err.message;
       }
     };
+  });
+  // 削除(本日バナーからも。繰り返しは回/全体を選択)
+  $("today-event-list").querySelectorAll("[data-evdelete]").forEach((btn) => {
+    btn.onclick = () => deleteEvent(events.find((e) => e.id === parseInt(btn.dataset.evdelete, 10)));
   });
 }
 
@@ -2302,8 +2310,8 @@ function renderEventList() {
         .map(
           (e) => `<li>
             <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}${e.start_time ? ` ${e.start_time}` : ""}</span>
-            <span>${escapeHtml(e.title)}${e.room_id && e.room_name ? ` <button class="btn-text" data-evroom="${e.room_id}">🎥${escapeHtml(e.room_name)}</button>` : ""}</span>
-            <span class="e-user">by ${escapeHtml(e.username)}</span>
+            <span>${e.recurrence ? `<span class="recur-tag" title="${escapeHtml(e.recurrence)}">🔁</span>` : ""}${escapeHtml(e.title)}${e.room_id && e.room_name ? ` <button class="btn-text" data-evroom="${e.room_id}">🎥${escapeHtml(e.room_name)}</button>` : ""}</span>
+            <span class="e-user">by ${escapeHtml(e.username)}${e.can_delete ? ` <button class="btn-text danger" data-evdelete="${e.id}">削除</button>` : ""}</span>
           </li>`
         )
         .join("")
@@ -2320,6 +2328,37 @@ function renderEventList() {
       }
     };
   });
+  $("event-list").querySelectorAll("[data-evdelete]").forEach((btn) => {
+    btn.onclick = () => deleteEvent(monthEvents.find((e) => e.id === parseInt(btn.dataset.evdelete, 10)));
+  });
+}
+
+/* イベント削除。繰り返しの一部なら「この回だけ/繰り返し全体」を選ばせる */
+async function deleteEvent(ev) {
+  if (!ev) return;
+  let scope = "one";
+  if (ev.series_id) {
+    // 繰り返しの一部: OK=この回だけ / キャンセルは中止。シリーズ全体は別確認
+    const all = confirm(
+      `「${ev.title}」は繰り返しイベントです。\n\n` +
+      `OK = 繰り返し全体を削除\nキャンセル = この回だけ削除するか選びます`
+    );
+    if (all) {
+      scope = "series";
+    } else {
+      if (!confirm(`「${ev.title}」（${ev.date}）のこの回だけを削除します。よろしいですか？`)) return;
+      scope = "one";
+    }
+  } else {
+    if (!confirm(`「${ev.title}」を削除します。よろしいですか？`)) return;
+  }
+  try {
+    await api(`/api/events/${ev.id}?scope=${scope}`, "DELETE");
+    await loadEvents();
+    await loadTodayEvents();
+  } catch (err) {
+    $("lobby-error").textContent = err.message;
+  }
 }
 
 $("cal-prev").onclick = () => {
@@ -2344,25 +2383,35 @@ function openEventModal(date) {
       ? eventScope
       : "";
   $("event-room").value = "";
+  $("event-repeat").value = "none";
+  $("event-repeat-until").value = "";
+  $("event-repeat-until-row").classList.add("hidden");
   $("event-overlay").classList.remove("hidden");
   $("event-title").focus();
 }
 
 $("btn-event-new").onclick = () => openEventModal("");
 $("btn-event-cancel").onclick = () => $("event-overlay").classList.add("hidden");
+// 繰り返しを選ぶと終了日の入力欄を出す
+$("event-repeat").onchange = () => {
+  $("event-repeat-until-row").classList.toggle("hidden", $("event-repeat").value === "none");
+};
 
 $("event-form").onsubmit = async (e) => {
   e.preventDefault();
   $("event-form-error").textContent = "";
   const scope = $("event-scope-modal").value;
   try {
-    await api("/api/events", "POST", {
+    const r = await api("/api/events", "POST", {
       title: $("event-title").value.trim(),
       date: $("event-date").value,
       start_time: $("event-time").value || null,
       team_id: scope ? parseInt(scope, 10) : null,
       room_id: $("event-room").value ? parseInt($("event-room").value, 10) : null,
+      repeat: $("event-repeat").value,
+      repeat_until: $("event-repeat-until").value || null,
     });
+    if (r.count > 1) $("lobby-error").textContent = `繰り返しイベントを${r.count}件作成しました`;
     $("event-overlay").classList.add("hidden");
     // 作成したイベントが見えるよう、表示スコープと月を合わせる
     eventScope = scope;

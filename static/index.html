@@ -836,6 +836,18 @@
         <label>イベント名
           <input type="text" id="event-title" required maxlength="200" placeholder="例: みんなで傾聴会">
         </label>
+        <label>繰り返し
+          <select id="event-repeat">
+            <option value="none">繰り返さない</option>
+            <option value="daily">毎日</option>
+            <option value="weekdays">平日（月〜金）</option>
+            <option value="weekly">毎週</option>
+            <option value="monthly">毎月</option>
+          </select>
+        </label>
+        <label id="event-repeat-until-row" class="hidden">繰り返し終了日（空欄なら約3か月先まで）
+          <input type="date" id="event-repeat-until">
+        </label>
         <label>公開範囲
           <select id="event-scope-modal"><option value="">サイト全体</option></select>
         </label>

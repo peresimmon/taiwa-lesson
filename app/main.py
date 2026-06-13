@@ -329,6 +329,9 @@ class EventIn(BaseModel):
     start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")  # "HH:MM"(任意)
     team_id: int | None = None  # 指定するとチーム限定の予定
     room_id: int | None = None  # ルーム連携(予定からルームに参加できる)
+    # 繰り返し(Googleカレンダー風)。noneは単発
+    repeat: str = Field(default="none", pattern=r"^(none|daily|weekdays|weekly|monthly)$")
+    repeat_until: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")  # 繰り返し終了日(含む)
 
 
 class AttendanceIn(BaseModel):
@@ -1461,9 +1464,21 @@ def _event_payloads(db: Session, user: User, rows: list) -> list[dict]:
         .filter(EventAttendance.event_id.in_(event_ids), EventAttendance.user_id == user.id)
         .all()
     ) if event_ids else {}
+    # 自分がリーダーのチーム(イベント削除権限の判定に使う)
+    led_team_ids = {
+        m.team_id
+        for m in db.query(TeamMember).filter(
+            TeamMember.user_id == user.id, TeamMember.is_leader.is_(True)
+        )
+    }
+    is_admin = _is_site_admin(user)
     out = []
     for e, name, dn in rows:
         room = rooms.get(e.room_id)
+        can_delete = (
+            e.user_id == user.id or is_admin
+            or (e.team_id is not None and e.team_id in led_team_ids)
+        )
         out.append({
             "id": e.id,
             "title": e.title,
@@ -1475,6 +1490,9 @@ def _event_payloads(db: Session, user: User, rows: list) -> list[dict]:
             "room_attendance_required": bool(room.attendance_required) if room else False,
             "my_attendance": my_status.get(e.id),
             "yes_count": yes_counts.get(e.id, 0),
+            "series_id": e.series_id,
+            "recurrence": e.recurrence,
+            "can_delete": can_delete,
         })
     return out
 
@@ -1561,25 +1579,150 @@ def set_attendance(
     return {"ok": True, "status": body.status}
 
 
+# --- 繰り返しイベント(Googleカレンダー風) ---------------------------------------
+
+RECUR_MAX_OCCURRENCES = 366   # 暴走防止。1シリーズの最大生成数
+RECUR_DEFAULT_DAYS = 90       # 終了日未指定時のデフォルト期間
+_WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
+
+
+def _recurrence_label(start, repeat: str) -> str | None:
+    """繰り返しの表示用ラベル"""
+    if repeat == "daily":
+        return "毎日"
+    if repeat == "weekdays":
+        return "平日"
+    if repeat == "weekly":
+        return f"毎週{_WEEKDAY_JA[start.weekday()]}"
+    if repeat == "monthly":
+        return f"毎月{start.day}日"
+    return None
+
+
+def _recurrence_dates(start, repeat: str, until) -> list:
+    """開始日から終了日(含む)までの繰り返し日を列挙する(最大RECUR_MAX_OCCURRENCES件)"""
+    from datetime import date as _date, timedelta
+
+    out: list = []
+    if repeat == "monthly":
+        # 毎月同じ日。その日が無い月(31日など)はスキップ
+        y, mo, dom = start.year, start.month, start.day
+        steps = 0
+        while len(out) < RECUR_MAX_OCCURRENCES and steps < 400:
+            steps += 1
+            try:
+                d = _date(y, mo, dom)
+            except ValueError:
+                d = None
+            if d is not None:
+                if d > until:
+                    break
+                out.append(d)
+            mo += 1
+            if mo > 12:
+                mo, y = 1, y + 1
+        return out
+    step = 7 if repeat == "weekly" else 1
+    d = start
+    while d <= until and len(out) < RECUR_MAX_OCCURRENCES:
+        if repeat == "weekdays":
+            if d.weekday() < 5:  # 月〜金
+                out.append(d)
+            d += timedelta(days=1)
+        else:  # daily / weekly
+            out.append(d)
+            d += timedelta(days=step)
+    return out
+
+
+def _can_manage_event(db: Session, user: User, event: Event) -> bool:
+    """イベントの編集・削除権限。作成者・サイト管理者・(チーム予定なら)そのチームのリーダー"""
+    if event.user_id == user.id or _is_site_admin(user):
+        return True
+    if event.team_id:
+        m = _membership(db, event.team_id, user.id)
+        return bool(m and m.is_leader)
+    return False
+
+
 @app.post("/api/events", status_code=201)
 def create_event(
     body: EventIn,
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
+    from datetime import date as _date, timedelta
+
     if body.team_id:
         _require_team_member(db, user, body.team_id)
     if body.room_id:
         room = _room_or_404(db, user, body.room_id)
         if not _room_visible(db, user, room):
             raise HTTPException(status_code=403, detail="このルームには参加できません")
-    event = Event(
-        user_id=user.id, title=body.title, date=body.date, start_time=body.start_time,
-        team_id=body.team_id, room_id=body.room_id,
-    )
-    db.add(event)
+
+    # 単発
+    if body.repeat == "none":
+        event = Event(
+            user_id=user.id, title=body.title, date=body.date, start_time=body.start_time,
+            team_id=body.team_id, room_id=body.room_id,
+        )
+        db.add(event)
+        db.commit()
+        return {"ok": True, "id": event.id, "count": 1}
+
+    # 繰り返し: 各回を実体化し、同じseries_idでまとめる
+    start = _date.fromisoformat(body.date)
+    if body.repeat_until:
+        until = _date.fromisoformat(body.repeat_until)
+        if until < start:
+            raise HTTPException(status_code=422, detail="繰り返し終了日は開始日以降にしてください")
+    else:
+        until = start + timedelta(days=RECUR_DEFAULT_DAYS)
+    dates = _recurrence_dates(start, body.repeat, until) or [start]
+    series = secrets.token_hex(8)
+    label = _recurrence_label(start, body.repeat)
+    first_id = None
+    for d in dates:
+        ev = Event(
+            user_id=user.id, title=body.title, date=d.isoformat(), start_time=body.start_time,
+            team_id=body.team_id, room_id=body.room_id, series_id=series, recurrence=label,
+        )
+        db.add(ev)
+        db.flush()
+        if first_id is None:
+            first_id = ev.id
     db.commit()
-    return {"ok": True, "id": event.id}
+    return {"ok": True, "id": first_id, "count": len(dates), "series_id": series}
+
+
+@app.delete("/api/events/{event_id}")
+def delete_event(
+    event_id: int,
+    scope: str = "one",
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """イベントを削除する。scope=oneでその回だけ、scope=seriesで繰り返し全体。
+    削除できるのは作成者・サイト管理者・チーム予定ならそのチームのリーダー"""
+    if scope not in ("one", "series"):
+        raise HTTPException(status_code=422, detail="scopeはoneかseriesで指定してください")
+    event = db.get(Event, event_id)
+    author = db.get(User, event.user_id) if event else None
+    if event is None or author is None or author.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="イベントが存在しません")
+    if not _can_manage_event(db, user, event):
+        raise HTTPException(status_code=403, detail="このイベントを削除する権限がありません")
+    if scope == "series" and event.series_id:
+        targets = db.query(Event).filter(Event.series_id == event.series_id).all()
+    else:
+        targets = [event]
+    ids = [e.id for e in targets]
+    db.query(EventAttendance).filter(
+        EventAttendance.event_id.in_(ids)
+    ).delete(synchronize_session=False)
+    db.query(Event).filter(Event.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True, "deleted": len(ids)}
 
 
 @app.get("/api/posts")

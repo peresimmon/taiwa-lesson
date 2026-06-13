@@ -1160,6 +1160,100 @@ async def test_events_attendance(users, admin_headers):
     requests.put(f"{BASE}/api/admin/users/{uid0}/role", headers=admin_headers, json={"role": "user"})
 
 
+def test_recurring_events(users, admin_headers):
+    print("[19] 繰り返しイベント(生成・各種別・削除・権限)")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}
+    suffix = secrets.token_hex(3)
+
+    def month_events(headers, month):
+        return requests.get(f"{BASE}/api/events?month={month}", headers=headers).json()
+
+    # 毎日: 2026-09-01〜09-07 = 7件
+    title_d = f"毎日_{suffix}"
+    r = requests.post(f"{BASE}/api/events", headers=h0, json={
+        "title": title_d, "date": "2026-09-01", "start_time": "08:00",
+        "repeat": "daily", "repeat_until": "2026-09-07"})
+    check("毎日の繰り返し作成", r.status_code == 201 and r.json()["count"] == 7, r.text)
+    evs = [e for e in month_events(h0, "2026-09") if e["title"] == title_d]
+    check("毎日7件が生成される", len(evs) == 7, len(evs))
+    check("各回に繰り返しラベルと同じseries_id",
+          all(e["recurrence"] == "毎日" for e in evs)
+          and len({e["series_id"] for e in evs}) == 1, evs[:2])
+
+    # 平日: 2026-09-01(火)〜09-13 → 平日のみ(土日除外)= 9日分
+    title_w = f"平日_{suffix}"
+    r = requests.post(f"{BASE}/api/events", headers=h0, json={
+        "title": title_w, "date": "2026-09-01",
+        "repeat": "weekdays", "repeat_until": "2026-09-13"})
+    cnt = r.json()["count"]
+    check("平日のみ生成(土日除外)", r.status_code == 201 and cnt == 9, cnt)
+    evs_w = [e for e in month_events(h0, "2026-09") if e["title"] == title_w]
+    weekdays_only = all(
+        __import__("datetime").date.fromisoformat(e["date"]).weekday() < 5 for e in evs_w
+    )
+    check("生成された日付はすべて平日", weekdays_only, [e["date"] for e in evs_w])
+
+    # 毎週: 2026-09-02(水)から毎週、09-30まで = 5件
+    title_wk = f"毎週_{suffix}"
+    r = requests.post(f"{BASE}/api/events", headers=h0, json={
+        "title": title_wk, "date": "2026-09-02",
+        "repeat": "weekly", "repeat_until": "2026-09-30"})
+    check("毎週の繰り返し作成", r.status_code == 201 and r.json()["count"] == 5, r.text)
+    evs_wk = [e for e in month_events(h0, "2026-09") if e["title"] == title_wk]
+    check("毎週は7日間隔・水曜固定",
+          all(__import__("datetime").date.fromisoformat(e["date"]).weekday() == 2 for e in evs_wk),
+          [e["date"] for e in evs_wk])
+
+    # 毎月: 2026-01-15から12-31まで毎月15日 = 12件
+    title_m = f"毎月_{suffix}"
+    r = requests.post(f"{BASE}/api/events", headers=h0, json={
+        "title": title_m, "date": "2026-01-15",
+        "repeat": "monthly", "repeat_until": "2026-12-31"})
+    check("毎月の繰り返し作成", r.status_code == 201 and r.json()["count"] == 12, r.text)
+
+    # 終了日が開始日より前は422
+    r = requests.post(f"{BASE}/api/events", headers=h0, json={
+        "title": "逆転", "date": "2026-09-10", "repeat": "daily", "repeat_until": "2026-09-01"})
+    check("終了日が開始前は422", r.status_code == 422, r.text)
+    # 不正なrepeatは422
+    r = requests.post(f"{BASE}/api/events", headers=h0, json={
+        "title": "不正", "date": "2026-09-10", "repeat": "yearly"})
+    check("不正なrepeatは422", r.status_code == 422, r.text)
+
+    # 削除: この回だけ(scope=one)
+    one_id = evs[0]["id"]
+    r = requests.delete(f"{BASE}/api/events/{one_id}?scope=one", headers=h0)
+    check("この回だけ削除", r.status_code == 200 and r.json()["deleted"] == 1, r.text)
+    remain = [e for e in month_events(h0, "2026-09") if e["title"] == title_d]
+    check("1件だけ消えて残りは残る", len(remain) == 6, len(remain))
+
+    # 削除: 繰り返し全体(scope=series)
+    r = requests.delete(f"{BASE}/api/events/{remain[0]['id']}?scope=series", headers=h0)
+    check("繰り返し全体を削除", r.status_code == 200 and r.json()["deleted"] == 6, r.text)
+    check("シリーズが全部消える",
+          not any(e["title"] == title_d for e in month_events(h0, "2026-09")), "残っている")
+
+    # 権限: 他人のイベントは削除できない(403)
+    r = requests.delete(f"{BASE}/api/events/{evs_w[0]['id']}?scope=one", headers=h1)
+    check("他人のイベントは削除不可", r.status_code == 403, r.text)
+    # 不正なscopeは422
+    r = requests.delete(f"{BASE}/api/events/{evs_w[0]['id']}?scope=all", headers=h0)
+    check("不正なscopeは422", r.status_code == 422, r.text)
+    # 存在しないイベントは404
+    r = requests.delete(f"{BASE}/api/events/999999?scope=one", headers=h0)
+    check("存在しないイベント削除は404", r.status_code == 404, r.text)
+
+    # 後始末(残りのシリーズを掃除)
+    for t in (title_w, title_wk, title_m):
+        ev = next((e for e in month_events(h0, "2026-09") if e["title"] == t), None)
+        if ev:
+            requests.delete(f"{BASE}/api/events/{ev['id']}?scope=series", headers=h0)
+    m_ev = next((e for e in month_events(h0, "2026-01") if e["title"] == title_m), None)
+    if m_ev:
+        requests.delete(f"{BASE}/api/events/{m_ev['id']}?scope=series", headers=h0)
+
+
 def test_demo_data(users, admin_headers):
     print("[17] デモデータ生成・削除")
     user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1240,6 +1334,7 @@ async def main():
     await test_trust_safety(users, admin_headers)  # ブロックを作るため最後に実行
     test_team_v2_and_profile(users, admin_headers)
     await test_events_attendance(users, admin_headers)
+    test_recurring_events(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
