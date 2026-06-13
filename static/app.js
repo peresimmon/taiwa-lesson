@@ -34,6 +34,7 @@ applyTheme(currentTheme);
 // ---- 状態 -------------------------------------------------------------------
 let token = localStorage.getItem("vm_token") || "";
 let username = localStorage.getItem("vm_username") || "";
+let displayName = "";        // 表示名(未設定時はusernameと同じ)
 let userRole = "user";       // "user" | "moderator" | "site_admin" | "system_admin"
 let sessionMinutes = 10;     // サイト設定から取得するセッション時間(分)
 
@@ -113,9 +114,10 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-function setLoggedIn(newToken, newUsername, newRole, mustChangePassword) {
+function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName) {
   token = newToken;
   username = newUsername;
+  displayName = newDisplayName || newUsername;
   userRole = newRole || "user";
   localStorage.setItem("vm_token", token);
   localStorage.setItem("vm_username", username);
@@ -125,12 +127,19 @@ function setLoggedIn(newToken, newUsername, newRole, mustChangePassword) {
     showScreen("password");
     return;
   }
-  $("user-name").textContent = `👤 ${username}`;
+  updateHeaderName();
   $("user-info").classList.remove("hidden");
   $("btn-admin").classList.toggle("hidden", !["site_admin", "system_admin"].includes(userRole));
   $("btn-sysadmin").classList.toggle("hidden", userRole !== "system_admin");
-  $("dash-username").textContent = username;
+  $("dash-username").textContent = displayName;
   showLobby();
+}
+
+/* ヘッダーのユーザーアイコンとメニューに表示名を反映する */
+function updateHeaderName() {
+  $("user-name").textContent = `👤 ${displayName} ▾`;
+  $("um-name").textContent = displayName;
+  $("um-login").textContent = `ログインID: ${username}`;
 }
 
 /* ロビー(ダッシュボード)を表示し、データを読み込む */
@@ -154,9 +163,11 @@ async function ensureWS() {
 function logout() {
   token = "";
   username = "";
+  displayName = "";
   userRole = "user";
   $("btn-admin").classList.add("hidden");
   $("btn-sysadmin").classList.add("hidden");
+  closeUserMenu();
   localStorage.removeItem("vm_token");
   localStorage.removeItem("vm_username");
   cleanupCall();
@@ -164,6 +175,34 @@ function logout() {
   $("user-info").classList.add("hidden");
   showScreen("auth");
 }
+
+// ---- ヘッダー(サイト名・ユーザーメニュー) -----------------------------------------
+// 左上のサイト名でホーム(ダッシュボード)へ戻る
+$("site-home").onclick = () => {
+  if (!token) return;
+  if (!$("screen-password").classList.contains("hidden")) return; // 初回パスワード変更中は移動しない
+  showLobby();
+};
+
+function closeUserMenu() {
+  $("user-menu").classList.add("hidden");
+}
+
+// 右上のユーザーアイコンでメニューを開閉する
+$("user-name").onclick = (e) => {
+  e.stopPropagation();
+  $("user-menu").classList.toggle("hidden");
+};
+document.addEventListener("click", (e) => {
+  if (!$("user-menu").classList.contains("hidden") && !e.target.closest(".user-menu-wrap")) {
+    closeUserMenu();
+  }
+});
+$("um-profile").onclick = () => {
+  closeUserMenu();
+  showProfile();
+};
+$("um-logout").onclick = () => logout();
 
 // ---- 認証画面 -----------------------------------------------------------------
 let authMode = "login";
@@ -196,13 +235,11 @@ $("auth-form").onsubmit = async (e) => {
     };
     if (IS_SUB_LOGIN) body.site = $("auth-site").value.trim();
     const data = await api(`/api/${authMode === "login" ? "login" : "register"}`, "POST", body);
-    setLoggedIn(data.token, data.username, data.role, data.must_change_password);
+    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name);
   } catch (err) {
     $("auth-error").textContent = err.message;
   }
 };
-
-$("btn-logout").onclick = logout;
 
 // ---- 初回パスワード変更 ---------------------------------------------------------
 $("password-form").onsubmit = async (e) => {
@@ -216,7 +253,7 @@ $("password-form").onsubmit = async (e) => {
     $("pw-current").value = "";
     $("pw-new").value = "";
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, false);
+    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username);
   } catch (err) {
     $("pw-error").textContent = err.message;
   }
@@ -1770,12 +1807,12 @@ function renderTeamScreenMembers() {
           `<button class="btn-text" data-lead="${m.user_id}" data-flag="${!m.is_leader}">${m.is_leader ? "リーダー解除" : "リーダーにする"}</button>`
         );
         if (!m.is_leader) {
-          actions.push(`<button class="btn-text" data-warnmember="${m.user_id}" data-name="${escapeHtml(m.username)}">警告</button>`);
+          actions.push(`<button class="btn-text" data-warnmember="${m.user_id}" data-name="${escapeHtml(m.display_name || m.username)}">警告</button>`);
           actions.push(`<button class="btn-text danger" data-remove="${m.user_id}">削除</button>`);
         }
       }
       return `<li>
-        <span>${escapeHtml(m.username)}${isMe ? " <small>(あなた)</small>" : ""}</span>
+        <span>${escapeHtml(m.display_name || m.username)}${isMe ? " <small>(あなた)</small>" : ""}</span>
         ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
         ${actions.length ? `<span class="h-date">${actions.join(" ")}</span>` : ""}
       </li>`;
@@ -2079,7 +2116,7 @@ function openRoomForm(room) {
     $("room-manager-list").innerHTML = room.managers.length
       ? room.managers
           .map(
-            (m) => `<li><span>${escapeHtml(m.username)}</span>
+            (m) => `<li><span>${escapeHtml(m.display_name || m.username)}</span>
               <span class="h-date"><button class="btn-text danger" data-rmgr="${m.user_id}">解除</button></span></li>`
           )
           .join("")
@@ -2357,28 +2394,20 @@ function renderAdminUsers() {
 
   $("admin-user-rows").innerHTML = sorted
     .map((u) => {
-      const isSelf = u.username === username;
       const isAdminRole = ["site_admin", "system_admin"].includes(u.role);
-      // ロール変更: システム管理者と自分自身は変更不可
-      const roleCell = u.role === "system_admin" || isSelf
-        ? `<span class="role-tag speaker">${roleLabels[u.role] || u.role}</span>`
-        : `<select class="role-select-mini" data-roleuser="${u.id}">
-            <option value="user" ${u.role === "user" ? "selected" : ""}>一般</option>
-            <option value="moderator" ${u.role === "moderator" ? "selected" : ""}>モデレータ</option>
-            <option value="site_admin" ${u.role === "site_admin" ? "selected" : ""}>サイト管理者</option>
-          </select>`;
       return `<tr class="${u.is_active ? "" : "row-inactive"}">
         <td>${u.id}</td>
         <td class="nowrap">${escapeHtml(u.username)}</td>
-        <td class="nowrap">${roleCell}</td>
+        <td class="nowrap">${escapeHtml(u.display_name || "")}</td>
+        <td class="nowrap">${roleLabels[u.role] || u.role}</td>
         <td class="nowrap">${u.is_active ? "有効" : '<span class="role-tag speaker">無効</span>'}</td>
         <td class="nowrap">${parseUTC(u.created_at).toLocaleDateString("ja-JP")}</td>
         <td>${u.session_count}</td>
         <td class="admin-actions">
-          <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.username)}">履歴</button>
-          ${isAdminRole ? "" : `<button class="btn-text" data-active="${u.id}" data-next="${!u.is_active}" data-name="${escapeHtml(u.username)}">${u.is_active ? "無効化" : "有効化"}</button>
-          <button class="btn-text" data-resetpw="${u.id}" data-name="${escapeHtml(u.username)}">PWリセット</button>
-          <button class="btn-text" data-warnuser="${u.id}" data-name="${escapeHtml(u.username)}">警告</button>
+          <button class="btn-text" data-edit="${u.id}">編集</button>
+          <button class="btn-text" data-history="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">履歴</button>
+          ${isAdminRole ? "" : `<button class="btn-text" data-resetpw="${u.id}" data-name="${escapeHtml(u.username)}">PWリセット</button>
+          <button class="btn-text" data-warnuser="${u.id}" data-name="${escapeHtml(u.display_name || u.username)}">警告</button>
           <button class="btn-text danger" data-delete="${u.id}" data-name="${escapeHtml(u.username)}">削除</button>`}
         </td>
       </tr>`;
@@ -2388,27 +2417,15 @@ function renderAdminUsers() {
   $("admin-user-rows").querySelectorAll("[data-history]").forEach((btn) => {
     btn.onclick = () => loadAdminHistory(btn.dataset.history, btn.dataset.name);
   });
-  $("admin-user-rows").querySelectorAll("[data-roleuser]").forEach((sel) => {
-    sel.onchange = async () => {
-      try {
-        await api(`/api/admin/users/${sel.dataset.roleuser}/role`, "PUT", { role: sel.value });
-        await loadAdminUsers();
-      } catch (err) {
-        $("admin-error").textContent = err.message;
-        await loadAdminUsers(); // 失敗時は表示を元に戻す
-      }
-    };
-  });
-  $("admin-user-rows").querySelectorAll("[data-active]").forEach((btn) => {
-    btn.onclick = async () => {
-      const enable = btn.dataset.next === "true";
-      if (!enable && !confirm(`「${btn.dataset.name}」を無効化します。ログインできなくなります。よろしいですか？`)) return;
-      try {
-        await api(`/api/admin/users/${btn.dataset.active}/active`, "PUT", { is_active: enable });
-        await loadAdminUsers();
-      } catch (err) {
-        $("admin-error").textContent = err.message;
-      }
+  $("admin-user-rows").querySelectorAll("[data-edit]").forEach((btn) => {
+    btn.onclick = () => {
+      const u = adminUsers.find((x) => x.id === parseInt(btn.dataset.edit, 10));
+      if (!u) return;
+      openUserEditModal(
+        u,
+        (body) => api(`/api/admin/users/${u.id}`, "PUT", body),
+        loadAdminUsers
+      );
     };
   });
   $("admin-user-rows").querySelectorAll("[data-resetpw]").forEach((btn) => {
@@ -2459,6 +2476,61 @@ $("btn-export-users").onclick = async () => {
     $("admin-error").textContent = err.message;
   }
 };
+
+/* ユーザー編集モーダル(表示名・権限・有効/無効)。管理画面とシステム管理画面で共用。
+ * saveFn(body) が PUT 先を決め、保存成功後に afterSave() で一覧を再読込する */
+function openUserEditModal(u, saveFn, afterSave) {
+  const isSysAdminTarget = u.role === "system_admin";
+  const isSelf = u.username === username && u.role === userRole;
+  const roleEditable = !isSysAdminTarget && !isSelf;
+  const activeEditable = !["site_admin", "system_admin"].includes(u.role);
+  const roleField = roleEditable
+    ? `<select id="ue-role" class="role-select-mini">
+        <option value="user" ${u.role === "user" ? "selected" : ""}>一般</option>
+        <option value="moderator" ${u.role === "moderator" ? "selected" : ""}>モデレータ</option>
+        <option value="site_admin" ${u.role === "site_admin" ? "selected" : ""}>サイト管理者</option>
+      </select>`
+    : `<strong>${roleLabels[u.role] || u.role}</strong><small class="note"> （${isSysAdminTarget ? "システム管理者のロールは変更できません" : "自分のロールは変更できません"}）</small>`;
+  openModal(`ユーザーを編集`, `
+    <ul class="room-detail-list">
+      <li><span>内部ID</span><strong>${u.id}</strong></li>
+      <li><span>ユーザー名（ログインID・変更不可）</span><strong>${escapeHtml(u.username)}</strong></li>
+    </ul>
+    <form id="user-edit-form">
+      <label>表示名（空欄でユーザー名と同じ）
+        <input type="text" id="ue-display-name" maxlength="50" value="${escapeHtml(u.display_name || "")}">
+      </label>
+      <label>権限<br>${roleField}</label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="ue-active" ${u.is_active ? "checked" : ""} ${activeEditable ? "" : "disabled"}>
+        有効（オフにするとログインできなくなります）
+      </label>
+    </form>
+    <p id="ue-msg" class="error"></p>`,
+    [
+      {
+        label: "保存", primary: true,
+        onClick: async () => {
+          const body = { display_name: $("ue-display-name").value.trim() };
+          if (roleEditable) body.role = $("ue-role").value;
+          if (activeEditable) {
+            const next = $("ue-active").checked;
+            if (u.is_active && !next &&
+                !confirm(`「${u.username}」を無効化します。ログインできなくなります。よろしいですか？`)) return;
+            body.is_active = next;
+          }
+          try {
+            await saveFn(body);
+            closeModal();
+            await afterSave();
+          } catch (err) {
+            $("ue-msg").textContent = err.message;
+          }
+        },
+      },
+      { label: "キャンセル", onClick: closeModal },
+    ]);
+}
 
 /* ユーザーのセッション履歴をモーダルで表示する */
 async function loadAdminHistory(userId, name) {
@@ -2727,33 +2799,28 @@ async function loadAdminAudit() {
 }
 
 // --- チーム管理(サイト管理者) ---
-let adminTeamId = null;
-let adminTeamName = "";
-
 async function loadAdminTeams() {
   const teams = await api("/api/admin/teams");
   $("admin-team-list").innerHTML = teams.length
     ? teams
         .map(
           (t) => `<li>
-            <span>${escapeHtml(t.name)}</span>
+            <button class="team-link" data-tdetail="${t.id}">${escapeHtml(t.name)}</button>
             <span class="e-user">${t.members}人${t.leaders.length ? ` / リーダー: ${t.leaders.map(escapeHtml).join(", ")}` : ""}
-              <button class="btn-text" data-tmembers="${t.id}" data-name="${escapeHtml(t.name)}">管理</button>
               <button class="btn-text danger" data-tdelete="${t.id}" data-name="${escapeHtml(t.name)}">削除</button>
             </span>
           </li>`
         )
         .join("")
     : '<li class="empty-note">チームはまだありません</li>';
-  $("admin-team-list").querySelectorAll("[data-tmembers]").forEach((btn) => {
-    btn.onclick = () => showAdminTeam(btn.dataset.tmembers, btn.dataset.name);
+  $("admin-team-list").querySelectorAll("[data-tdetail]").forEach((btn) => {
+    btn.onclick = () => openAdminTeamModal(parseInt(btn.dataset.tdetail, 10));
   });
   $("admin-team-list").querySelectorAll("[data-tdelete]").forEach((btn) => {
     btn.onclick = async () => {
       if (!confirm(`チーム「${btn.dataset.name}」を削除します。チーム限定の投稿・予定も削除されます。よろしいですか？`)) return;
       try {
         await api(`/api/admin/teams/${btn.dataset.tdelete}`, "DELETE");
-        $("admin-team-detail").classList.add("hidden");
         await loadAdminTeams();
       } catch (err) {
         $("admin-error").textContent = err.message;
@@ -2762,54 +2829,127 @@ async function loadAdminTeams() {
   });
 }
 
-async function showAdminTeam(teamId, name) {
+/* チーム詳細モーダル。editing=trueで編集モード(リーダー・メンバー・チーム名の変更) */
+async function openAdminTeamModal(teamId, editing = false) {
   try {
-    const data = await api(`/api/teams/${teamId}/members`);
-    adminTeamId = teamId;
-    adminTeamName = name;
-    $("admin-team-detail").classList.remove("hidden");
-    $("admin-team-title").textContent = name;
-    $("admin-team-members").innerHTML = data.members.length
-      ? data.members
-          .map(
-            (m) => `<li>
-              <span>${escapeHtml(m.username)}</span>
-              ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
-              <span class="h-date">
-                <button class="btn-text" data-lead="${m.user_id}" data-flag="${!m.is_leader}">${m.is_leader ? "リーダー解除" : "リーダーにする"}</button>
-                <button class="btn-text danger" data-tremove="${m.user_id}">外す</button>
-              </span>
-            </li>`
-          )
-          .join("")
-      : '<li class="empty-note">メンバーがいません</li>';
-    $("admin-team-members").querySelectorAll("[data-lead]").forEach((btn) => {
-      btn.onclick = async () => {
-        try {
-          await api(`/api/admin/teams/${teamId}/members/${btn.dataset.lead}`, "PUT", {
-            is_leader: btn.dataset.flag === "true",
-          });
-          await loadAdminTeams();
-          await showAdminTeam(teamId, name);
-        } catch (err) {
-          $("admin-error").textContent = err.message;
-        }
-      };
-    });
-    $("admin-team-members").querySelectorAll("[data-tremove]").forEach((btn) => {
-      btn.onclick = async () => {
-        try {
-          await api(`/api/teams/${teamId}/members/${btn.dataset.tremove}`, "DELETE");
-          await loadAdminTeams();
-          await showAdminTeam(teamId, name);
-        } catch (err) {
-          $("admin-error").textContent = err.message;
-        }
-      };
-    });
+    const t = await api(`/api/teams/${teamId}`);
+    renderAdminTeamModal(t, editing);
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
+}
+
+function renderAdminTeamModal(t, editing) {
+  const memberRows = t.members.length
+    ? t.members
+        .map(
+          (m) => `<li>
+            <span>${escapeHtml(m.display_name)}</span>
+            ${m.is_leader ? '<span class="role-tag listener">リーダー</span>' : ""}
+            ${editing
+              ? `<span class="h-date">
+                  <button class="btn-text" data-lead="${m.user_id}" data-flag="${!m.is_leader}">${m.is_leader ? "リーダー解除" : "リーダーにする"}</button>
+                  <button class="btn-text danger" data-tremove="${m.user_id}" data-name="${escapeHtml(m.display_name)}">外す</button>
+                </span>`
+              : `<span class="e-user">ID: ${m.user_id} / ${escapeHtml(m.username)}</span>`}
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">メンバーがいません</li>';
+
+  if (!editing) {
+    // 詳細表示モード。編集ボタンは権限(リーダーまたはサイト管理者)がある場合のみ
+    openModal(`チーム: ${t.name}`, `
+      <ul class="room-detail-list">
+        <li><span>内部ID</span><strong>${t.id}</strong></li>
+        <li><span>チーム名</span><strong>${escapeHtml(t.name)}</strong></li>
+        <li><span>説明</span><strong>${escapeHtml(t.description) || "（なし）"}</strong></li>
+        <li><span>メンバー / セッション</span><strong>${t.stats.members}人 / ${t.stats.sessions}回</strong></li>
+      </ul>
+      <div class="setting-group-title">メンバー</div>
+      <ul class="history-list">${memberRows}</ul>`,
+      [
+        ...(t.is_leader
+          ? [{ label: "編集", primary: true, onClick: () => renderAdminTeamModal(t, true) }]
+          : []),
+        { label: "閉じる", onClick: closeModal },
+      ]);
+    return;
+  }
+
+  // 編集モード
+  openModal(`チームを編集: ${t.name}`, `
+    <form id="team-edit-form">
+      <label>チーム名
+        <input type="text" id="te-name" required maxlength="100" value="${escapeHtml(t.name)}">
+      </label>
+      <label>説明
+        <textarea id="te-desc" rows="2" maxlength="500">${escapeHtml(t.description)}</textarea>
+      </label>
+    </form>
+    <div class="setting-group-title">メンバー（リーダーの変更・削除）</div>
+    <ul class="history-list" id="te-members">${memberRows}</ul>
+    <form id="te-add-form" class="inline-form">
+      <input type="text" id="te-add-name" placeholder="ユーザー名（ログインID）で追加" required minlength="2" maxlength="50">
+      <button type="submit" class="btn-small">追加</button>
+    </form>
+    <p id="te-msg" class="error"></p>`,
+    [
+      {
+        label: "保存", primary: true,
+        onClick: async () => {
+          try {
+            await api(`/api/teams/${t.id}`, "PUT", {
+              name: $("te-name").value.trim(),
+              description: $("te-desc").value.trim(),
+            });
+            await loadAdminTeams();
+            await openAdminTeamModal(t.id, false);
+          } catch (err) {
+            $("te-msg").textContent = err.message;
+          }
+        },
+      },
+      { label: "詳細に戻る", onClick: () => renderAdminTeamModal(t, false) },
+    ]);
+
+  $("te-members").querySelectorAll("[data-lead]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api(`/api/admin/teams/${t.id}/members/${btn.dataset.lead}`, "PUT", {
+          is_leader: btn.dataset.flag === "true",
+        });
+        await loadAdminTeams();
+        await openAdminTeamModal(t.id, true);
+      } catch (err) {
+        $("te-msg").textContent = err.message;
+      }
+    };
+  });
+  $("te-members").querySelectorAll("[data-tremove]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm(`「${btn.dataset.name}」をチームから外します。よろしいですか？`)) return;
+      try {
+        await api(`/api/teams/${t.id}/members/${btn.dataset.tremove}`, "DELETE");
+        await loadAdminTeams();
+        await openAdminTeamModal(t.id, true);
+      } catch (err) {
+        $("te-msg").textContent = err.message;
+      }
+    };
+  });
+  $("te-add-form").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api(`/api/teams/${t.id}/members`, "POST", {
+        username: $("te-add-name").value.trim(),
+      });
+      await loadAdminTeams();
+      await openAdminTeamModal(t.id, true);
+    } catch (err) {
+      $("te-msg").textContent = err.message;
+    }
+  };
 }
 
 $("admin-team-form").onsubmit = async (e) => {
@@ -2819,21 +2959,6 @@ $("admin-team-form").onsubmit = async (e) => {
     await api("/api/admin/teams", "POST", { name: $("new-team-name").value.trim() });
     $("new-team-name").value = "";
     await loadAdminTeams();
-  } catch (err) {
-    $("admin-error").textContent = err.message;
-  }
-};
-
-$("admin-team-member-form").onsubmit = async (e) => {
-  e.preventDefault();
-  $("admin-error").textContent = "";
-  try {
-    await api(`/api/teams/${adminTeamId}/members`, "POST", {
-      username: $("team-member-name").value.trim(),
-    });
-    $("team-member-name").value = "";
-    await loadAdminTeams();
-    await showAdminTeam(adminTeamId, adminTeamName);
   } catch (err) {
     $("admin-error").textContent = err.message;
   }
@@ -3135,19 +3260,23 @@ async function showSysadmin() {
   }
 }
 
+let sysSites = [];      // サイト一覧のキャッシュ
+let sysSite = null;     // 詳細表示中のサイト
+let sysSettings = null; // 詳細表示中のサイトの設定
+let sysSettingsEditing = false;
+
 async function loadSysSites() {
-  const sites = await api("/api/sysadmin/sites");
-  $("sys-site-rows").innerHTML = sites
+  sysSites = await api("/api/sysadmin/sites");
+  $("sys-site-rows").innerHTML = sysSites
     .map(
       (s) => `<tr>
         <td>${s.id}</td>
         <td class="nowrap">${escapeHtml(s.slug)}</td>
-        <td class="nowrap"><strong>${escapeHtml(s.name)}</strong></td>
+        <td class="nowrap"><button class="team-link" data-site="${s.id}">${escapeHtml(s.name)}</button></td>
         <td class="nowrap">${s.is_main ? '<span class="role-tag speaker">メイン</span>' : "サブ"}</td>
         <td>${s.users}</td>
         <td class="admin-actions">
-          <button class="btn-text" data-users="${s.id}" data-slug="${escapeHtml(s.slug)}">ユーザー</button>
-          <button class="btn-text" data-settings="${s.id}" data-slug="${escapeHtml(s.slug)}">設定</button>
+          <button class="btn-text" data-site="${s.id}">詳細</button>
           ${s.is_main ? "" : `<button class="btn-text danger" data-delsite="${s.id}" data-slug="${escapeHtml(s.slug)}">削除</button>`}
         </td>
       </tr>`
@@ -3155,52 +3284,10 @@ async function loadSysSites() {
     .join("");
 
   const rows = $("sys-site-rows");
-  rows.querySelectorAll("[data-users]").forEach((btn) => {
-    btn.onclick = async () => {
-      try {
-        const users = await api(`/api/sysadmin/sites/${btn.dataset.users}/users`);
-        showSysPage("detail");
-        $("sys-users-site").textContent = `: ${btn.dataset.slug}`;
-        $("sys-user-rows").innerHTML = users.length
-          ? users
-              .map(
-                (u) => `<tr>
-                  <td>${u.id}</td>
-                  <td>${escapeHtml(u.username)}</td>
-                  <td>${roleLabels[u.role] || u.role}</td>
-                  <td>${u.session_count}</td>
-                </tr>`
-              )
-              .join("")
-          : '<tr><td colspan="4" class="empty-note">ユーザーがいません</td></tr>';
-      } catch (err) {
-        $("sysadmin-error").textContent = err.message;
-      }
-    };
-  });
-  rows.querySelectorAll("[data-settings]").forEach((btn) => {
-    btn.onclick = async () => {
-      try {
-        const s = await api(`/api/sysadmin/sites/${btn.dataset.settings}/settings`);
-        showSysPage("detail");
-        $("sys-settings-site").textContent = `: ${btn.dataset.slug}`;
-        const modes = [
-          s.mode_toon ? "デフォルメ" : null,
-          s.mode_real ? "リアル" : null,
-          s.mode_still ? "静止画" : null,
-          s.mode_camera ? "実映像" : null,
-        ].filter(Boolean).join("・") || "なし";
-        $("sys-settings-view").innerHTML = `
-          <li><div class="a-title">セッション時間</div><div class="a-body">${s.session_minutes}分</div></li>
-          <li><div class="a-title">新規登録</div><div class="a-body">${s.allow_registration ? "許可" : "停止中"}</div></li>
-          <li><div class="a-title">マッチング</div><div class="a-body">${s.role_matching ? "話し手×聞き手" : "役割なし"}</div></li>
-          <li><div class="a-title">表示</div><div class="a-body">${s.anonymous_mode ? "匿名(ランダムな呼び名)" : "実名(ユーザー名)"}</div></li>
-          <li><div class="a-title">表示モード</div><div class="a-body">${modes}</div></li>
-          <li><div class="a-title">ルーム機能</div><div class="a-body">${s.rooms_enabled ? "有効" : "無効"}</div></li>
-          <li><div class="a-title">アンケート</div><div class="a-body">${s.survey_enabled ? escapeHtml(s.survey_question) : "なし"}</div></li>`;
-      } catch (err) {
-        $("sysadmin-error").textContent = err.message;
-      }
+  rows.querySelectorAll("[data-site]").forEach((btn) => {
+    btn.onclick = () => {
+      const site = sysSites.find((s) => s.id === parseInt(btn.dataset.site, 10));
+      if (site) openSysSiteDetail(site);
     };
   });
   rows.querySelectorAll("[data-delsite]").forEach((btn) => {
@@ -3214,6 +3301,248 @@ async function loadSysSites() {
       }
     };
   });
+}
+
+// サイト一覧のCSVエクスポート
+$("btn-export-sites").onclick = async () => {
+  try {
+    const res = await fetch("/api/sysadmin/sites-export", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error("エクスポートに失敗しました");
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sites.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    $("sysadmin-error").textContent = err.message;
+  }
+};
+
+// ---- サイト詳細(ユーザー一覧・設定確認のタブ) --------------------------------------
+
+function showSysDetailTab(name) {
+  $("sys-detail-users").classList.toggle("hidden", name !== "users");
+  $("sys-detail-settings").classList.toggle("hidden", name !== "settings");
+  document.querySelectorAll(".sys-detail-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.tab === name);
+  });
+}
+document.querySelectorAll(".sys-detail-tab").forEach((tab) => {
+  tab.onclick = () => showSysDetailTab(tab.dataset.tab);
+});
+
+async function openSysSiteDetail(site) {
+  sysSite = site;
+  sysSettingsEditing = false;
+  $("sysadmin-error").textContent = "";
+  $("sys-detail-title").textContent = site.name;
+  $("sys-detail-sub").textContent =
+    `サイトID: ${site.slug} ／ 内部ID: ${site.id} ／ 種別: ${site.is_main ? "メイン" : "サブ"} ／ ユーザー: ${site.users}人`;
+  $("btn-site-rename").classList.remove("hidden");
+  showSysPage("detail");
+  showSysDetailTab("users");
+  try {
+    await Promise.all([loadSysSiteUsers(), loadSysSiteSettings()]);
+  } catch (err) {
+    $("sysadmin-error").textContent = err.message;
+  }
+}
+
+// サイト名(表示名)の変更。サイトID(slug)は紐付けに使うため変更しない
+$("btn-site-rename").onclick = () => {
+  if (!sysSite) return;
+  openModal(`サイト名を変更: ${sysSite.slug}`, `
+    <form id="site-rename-form">
+      <label>サイト名（表示名）
+        <input type="text" id="sr-name" required maxlength="100" value="${escapeHtml(sysSite.name)}">
+      </label>
+    </form>
+    <p class="note">サイトID「${escapeHtml(sysSite.slug)}」は内部の紐付けに使われるため変更できません。</p>
+    <p id="sr-msg" class="error"></p>`,
+    [
+      {
+        label: "保存", primary: true,
+        onClick: async () => {
+          try {
+            const r = await api(`/api/sysadmin/sites/${sysSite.id}`, "PUT", {
+              name: $("sr-name").value.trim(),
+            });
+            sysSite.name = r.name;
+            $("sys-detail-title").textContent = r.name;
+            closeModal();
+            await loadSysSites();
+          } catch (err) {
+            $("sr-msg").textContent = err.message;
+          }
+        },
+      },
+      { label: "キャンセル", onClick: closeModal },
+    ]);
+};
+
+async function loadSysSiteUsers() {
+  const users = await api(`/api/sysadmin/sites/${sysSite.id}/users`);
+  $("sys-user-rows").innerHTML = users.length
+    ? users
+        .map(
+          (u) => `<tr class="${u.is_active ? "" : "row-inactive"}">
+            <td>${u.id}</td>
+            <td class="nowrap">${escapeHtml(u.username)}</td>
+            <td class="nowrap">${escapeHtml(u.display_name || "")}</td>
+            <td class="nowrap">${roleLabels[u.role] || u.role}</td>
+            <td class="nowrap">${u.is_active ? "有効" : '<span class="role-tag speaker">無効</span>'}</td>
+            <td>${u.session_count}</td>
+            <td class="admin-actions"><button class="btn-text" data-sysedit="${u.id}">編集</button></td>
+          </tr>`
+        )
+        .join("")
+    : '<tr><td colspan="7" class="empty-note">ユーザーがいません</td></tr>';
+  $("sys-user-rows").querySelectorAll("[data-sysedit]").forEach((btn) => {
+    btn.onclick = () => {
+      const u = users.find((x) => x.id === parseInt(btn.dataset.sysedit, 10));
+      if (!u) return;
+      openUserEditModal(
+        u,
+        (body) => api(`/api/sysadmin/sites/${sysSite.id}/users/${u.id}`, "PUT", body),
+        loadSysSiteUsers
+      );
+    };
+  });
+}
+
+/* サイト設定の項目定義。読み取り表示と編集フォームの両方をここから生成する */
+const SETTING_FIELDS = [
+  { section: "サイト全体", items: [
+    { key: "site_name", label: "サイト名", type: "text" },
+    { key: "tagline", label: "キャッチコピー", type: "text" },
+    { key: "allow_registration", label: "新規ユーザー登録（メインサイトのみ有効）", type: "bool" },
+    { key: "rooms_enabled", label: "ルーム作成機能", type: "bool" },
+  ]},
+  { section: "マッチング", items: [
+    { key: "role_matching", label: "話し手×聞き手でマッチング", type: "bool" },
+    { key: "anonymous_mode", label: "匿名コミュニケーション（ランダムな呼び名）", type: "bool" },
+    { key: "rematch_priority", label: "「また話したい」同士の再マッチ優先", type: "bool" },
+  ]},
+  { section: "通話", items: [
+    { key: "session_minutes", label: "セッション時間（分）", type: "number", min: 1, max: 60 },
+    { key: "role_swap_enabled", label: "役割交代つきセッション", type: "bool" },
+    { key: "feature_mute", label: "ミュート", type: "bool" },
+    { key: "feature_camera_toggle", label: "映像オフ", type: "bool" },
+    { key: "feature_screenshare", label: "画面共有", type: "bool" },
+    { key: "feature_chat", label: "セッション内チャット", type: "bool" },
+  ]},
+  { section: "表示モード・話題カード", items: [
+    { key: "mode_toon", label: "デフォルメモードアバター", type: "bool" },
+    { key: "mode_real", label: "リアルモードアバター", type: "bool" },
+    { key: "mode_still", label: "静止画", type: "bool" },
+    { key: "mode_camera", label: "実映像（カメラそのまま）", type: "bool" },
+    { key: "lobby_topic_mode", label: "ロビー通話の話題カード", type: "select",
+      options: [["none", "なし"], ["random", "ランダム表示"], ["fixed", "任意設定"]] },
+    { key: "lobby_topic_text", label: "任意設定の話題", type: "text" },
+    { key: "topic_pool", label: "ランダム用の独自アセット（1行1話題）", type: "textarea" },
+  ]},
+  { section: "アンケート", items: [
+    { key: "survey_enabled", label: "セッション後のアンケート", type: "bool" },
+    { key: "survey_question", label: "アンケートの設問", type: "text" },
+    { key: "survey_questions", label: "複数設問（1行1問）", type: "textarea" },
+  ]},
+];
+
+async function loadSysSiteSettings() {
+  sysSettings = await api(`/api/sysadmin/sites/${sysSite.id}/settings`);
+  renderSysSettings();
+}
+
+function renderSysSettings() {
+  $("sys-settings-msg").textContent = "";
+  const editBtn = $("btn-sys-settings-edit");
+  editBtn.classList.remove("hidden");
+  editBtn.textContent = sysSettingsEditing ? "編集をやめる" : "編集";
+  editBtn.onclick = () => {
+    sysSettingsEditing = !sysSettingsEditing;
+    renderSysSettings();
+  };
+
+  if (!sysSettingsEditing) {
+    // 読み取り表示
+    $("sys-settings-body").innerHTML = SETTING_FIELDS
+      .map(
+        (g) => `<div class="setting-group">
+          <div class="setting-group-title">${g.section}</div>
+          <ul class="room-detail-list">
+            ${g.items.map((f) => {
+              const v = sysSettings[f.key];
+              let text;
+              if (f.type === "bool") text = v ? "有効" : "無効";
+              else if (f.type === "select") text = (f.options.find((o) => o[0] === v) || ["", v])[1];
+              else text = String(v ?? "").trim() || "（なし）";
+              return `<li><span>${f.label}</span><strong>${escapeHtml(String(text))}</strong></li>`;
+            }).join("")}
+          </ul>
+        </div>`
+      )
+      .join("");
+    return;
+  }
+
+  // 編集フォーム
+  $("sys-settings-body").innerHTML = `<form id="sys-settings-form">
+    ${SETTING_FIELDS.map(
+      (g) => `<div class="setting-group">
+        <div class="setting-group-title">${g.section}</div>
+        ${g.items.map((f) => {
+          const v = sysSettings[f.key];
+          if (f.type === "bool") {
+            return `<label class="checkbox-label"><input type="checkbox" id="sysset-${f.key}" ${v ? "checked" : ""}> ${f.label}</label>`;
+          }
+          if (f.type === "number") {
+            return `<label>${f.label}<input type="number" id="sysset-${f.key}" min="${f.min}" max="${f.max}" value="${v}" required></label>`;
+          }
+          if (f.type === "select") {
+            return `<label>${f.label}<select id="sysset-${f.key}" class="role-select-mini">
+              ${f.options.map((o) => `<option value="${o[0]}" ${v === o[0] ? "selected" : ""}>${o[1]}</option>`).join("")}
+            </select></label>`;
+          }
+          if (f.type === "textarea") {
+            return `<label>${f.label}<textarea id="sysset-${f.key}" rows="3">${escapeHtml(String(v ?? ""))}</textarea></label>`;
+          }
+          return `<label>${f.label}<input type="text" id="sysset-${f.key}" value="${escapeHtml(String(v ?? ""))}"></label>`;
+        }).join("")}
+      </div>`
+    ).join("")}
+    <div class="btn-row"><button type="submit" class="btn-primary">設定を保存</button></div>
+  </form>`;
+
+  $("sys-settings-form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("sys-settings-msg").textContent = "";
+    const body = {};
+    for (const g of SETTING_FIELDS) {
+      for (const f of g.items) {
+        const el = $(`sysset-${f.key}`);
+        if (f.type === "bool") body[f.key] = el.checked;
+        else if (f.type === "number") body[f.key] = parseInt(el.value, 10);
+        else body[f.key] = el.value;
+      }
+    }
+    try {
+      await api(`/api/sysadmin/sites/${sysSite.id}/settings`, "PUT", body);
+      sysSettingsEditing = false;
+      await loadSysSiteSettings();
+      $("sys-settings-msg").textContent = "保存しました";
+      // サイト名が変わった場合は一覧と見出しにも反映する
+      if (body.site_name.trim() && body.site_name.trim() !== sysSite.name) {
+        sysSite.name = body.site_name.trim();
+        $("sys-detail-title").textContent = sysSite.name;
+        await loadSysSites();
+      }
+    } catch (err) {
+      $("sys-settings-msg").textContent = err.message;
+    }
+  };
 }
 
 // --- デモデータ(本番運用では削除する) ---
@@ -3266,8 +3595,7 @@ $("sys-site-form").onsubmit = async (e) => {
   }
 };
 
-// ---- マイページ(右上のユーザー名から) ---------------------------------------------
-$("user-name").onclick = () => showProfile();
+// ---- マイページ(右上のユーザーメニュー「設定」から) -------------------------------
 $("btn-profile-back").onclick = () => showLobby();
 
 function renderThemeGrid() {
@@ -3289,6 +3617,7 @@ async function showProfile() {
   $("profile-error").textContent = "";
   $("email-msg").textContent = "";
   $("ppw-msg").textContent = "";
+  $("dn-msg").textContent = "";
   renderThemeGrid();
   showScreen("profile");
   try {
@@ -3298,11 +3627,13 @@ async function showProfile() {
       api("/api/teams"),
     ]);
     $("profile-info").innerHTML = `
-      <li><span>ユーザー名</span><strong>${escapeHtml(me.username)}</strong></li>
+      <li><span>ユーザー名（ログインID）</span><strong>${escapeHtml(me.username)}</strong></li>
+      <li><span>表示名</span><strong>${escapeHtml(me.display_name || me.username)}</strong></li>
       <li><span>権限</span><strong>${roleLabels[me.role] || me.role}</strong></li>
       <li><span>サイト</span><strong>${escapeHtml(me.site_name)}</strong></li>
       <li><span>登録日</span><strong>${parseUTC(me.created_at).toLocaleDateString("ja-JP")}</strong></li>
       <li><span>セッション回数</span><strong>${history.length}回</strong></li>`;
+    $("profile-display-name").value = me.display_name;
     $("profile-email").value = me.email;
     $("profile-history").innerHTML = history.length
       ? history
@@ -3345,6 +3676,21 @@ $("email-form").onsubmit = async (e) => {
   }
 };
 
+$("display-name-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("dn-msg").textContent = "";
+  try {
+    const r = await api("/api/me", "PUT", { display_name: $("profile-display-name").value.trim() });
+    displayName = r.display_name || username;
+    updateHeaderName();
+    $("dash-username").textContent = displayName;
+    await showProfile(); // プロフィール表示を更新
+    $("dn-msg").textContent = "保存しました";
+  } catch (err) {
+    $("dn-msg").textContent = err.message;
+  }
+};
+
 $("profile-pw-form").onsubmit = async (e) => {
   e.preventDefault();
   $("ppw-msg").textContent = "";
@@ -3376,7 +3722,7 @@ if ("serviceWorker" in navigator) {
   }
   try {
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, me.must_change_password);
+    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username);
   } catch {
     logout();
   }

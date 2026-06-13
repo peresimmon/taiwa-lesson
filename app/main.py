@@ -289,6 +289,7 @@ class PasswordIn(BaseModel):
 class TokenOut(BaseModel):
     token: str
     username: str
+    display_name: str = ""  # 表示名(未設定はusernameと同じ値)
     role: str = "user"
     site: str = MAIN_SITE_SLUG
     site_name: str = ""
@@ -338,8 +339,10 @@ class TeamIn(BaseModel):
     description: str = Field(default="", max_length=500)
 
 
-class EmailIn(BaseModel):
+class MeUpdateIn(BaseModel):
+    """自分の設定変更。送られてきたフィールドのみ更新する"""
     email: str | None = Field(default=None, max_length=120)
+    display_name: str | None = Field(default=None, max_length=50)  # 空文字でusernameに戻す
 
 
 class TeamMemberIn(BaseModel):
@@ -357,6 +360,17 @@ class RoleIn(BaseModel):
 
 class ActiveIn(BaseModel):
     is_active: bool
+
+
+class UserEditIn(BaseModel):
+    """ユーザー編集(管理者用)。送られてきたフィールドのみ更新する"""
+    display_name: str | None = Field(default=None, max_length=50)  # 空文字でusernameに戻す
+    role: str | None = Field(default=None, pattern=r"^(user|moderator|site_admin)$")
+    is_active: bool | None = None
+
+
+class SiteEditIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
 
 
 class RoomIn(BaseModel):
@@ -469,6 +483,7 @@ def token_response(user: User, site: Site) -> TokenOut:
     return TokenOut(
         token=create_token(user.id),
         username=user.username,
+        display_name=user.display_name or user.username,
         role=user.role,
         site=site.slug,
         site_name=site.name,
@@ -529,6 +544,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
     return {
         "id": user.id,
         "username": user.username,
+        "display_name": user.display_name or "",
         "role": user.role,
         "email": user.email or "",
         "created_at": user.created_at.isoformat(),
@@ -540,14 +556,21 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @app.put("/api/me")
 def update_me(
-    body: EmailIn,
+    body: MeUpdateIn,
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
-    """自分の設定変更(メールアドレス)"""
-    user.email = (body.email or "").strip() or None
+    """自分の設定変更(メールアドレス・表示名)。送られてきた項目のみ更新する"""
+    if "email" in body.model_fields_set:
+        user.email = (body.email or "").strip() or None
+    if "display_name" in body.model_fields_set:
+        user.display_name = (body.display_name or "").strip() or None
     db.commit()
-    return {"ok": True, "email": user.email or ""}
+    return {
+        "ok": True,
+        "email": user.email or "",
+        "display_name": user.display_name or "",
+    }
 
 
 @app.get("/api/config")
@@ -718,7 +741,7 @@ def list_reports(
     rows = q.order_by(Report.id.desc()).limit(100).all()
     user_ids = {r.reporter_id for r in rows} | {r.reported_id for r in rows}
     names = {
-        u.id: u.username
+        u.id: u.display_name or u.username
         for u in db.query(User).filter(User.id.in_(user_ids)).all()
     } if user_ids else {}
     return [
@@ -930,7 +953,7 @@ def team_members(
 ):
     team = _require_team_member(db, user, team_id)
     rows = (
-        db.query(TeamMember, User.username)
+        db.query(TeamMember, User.username, User.display_name)
         .join(User, TeamMember.user_id == User.id)
         .filter(TeamMember.team_id == team_id)
         .order_by(TeamMember.id)
@@ -939,8 +962,13 @@ def team_members(
     return {
         "team": team.name,
         "members": [
-            {"user_id": m.user_id, "username": name, "is_leader": m.is_leader}
-            for m, name in rows
+            {
+                "user_id": m.user_id,
+                "username": name,
+                "display_name": dn or name,
+                "is_leader": m.is_leader,
+            }
+            for m, name, dn in rows
         ],
     }
 
@@ -954,13 +982,13 @@ def team_detail(
     """チーム画面用の詳細(メンバー・統計込み)。メンバーとサイト管理者のみ"""
     team = _require_team_member(db, user, team_id)
     rows = (
-        db.query(TeamMember, User.username)
+        db.query(TeamMember, User.username, User.display_name)
         .join(User, TeamMember.user_id == User.id)
         .filter(TeamMember.team_id == team_id)
         .order_by(TeamMember.id)
         .all()
     )
-    member_ids = [m.user_id for m, _ in rows]
+    member_ids = [m.user_id for m, _, _ in rows]
     sessions = (
         db.query(Survey).filter(Survey.user_id.in_(member_ids)).count() if member_ids else 0
     )
@@ -972,8 +1000,13 @@ def team_detail(
         "is_leader": bool(my_membership and my_membership.is_leader) or _is_site_admin(user),
         "my_user_id": user.id,
         "members": [
-            {"user_id": m.user_id, "username": name, "is_leader": m.is_leader}
-            for m, name in rows
+            {
+                "user_id": m.user_id,
+                "username": name,
+                "display_name": dn or name,
+                "is_leader": m.is_leader,
+            }
+            for m, name, dn in rows
         ],
         "stats": {"members": len(member_ids), "sessions": sessions},
     }
@@ -1167,7 +1200,7 @@ def _room_payload(db: Session, user: User, room: Room) -> dict:
     payload = {
         "id": room.id,
         "name": room.name,
-        "creator": creator.username if creator else "?",
+        "creator": (creator.display_name or creator.username) if creator else "?",
         "team_id": room.team_id,
         "team_name": team.name if team else None,
         "has_passphrase": bool(room.passphrase),
@@ -1188,8 +1221,8 @@ def _room_payload(db: Session, user: User, room: Room) -> dict:
             "topic": room.topic,
         } if can_manage else None,
         "managers": [
-            {"user_id": m.user_id, "username": name}
-            for m, name in db.query(RoomManager, User.username)
+            {"user_id": m.user_id, "username": name, "display_name": dn or name}
+            for m, name, dn in db.query(RoomManager, User.username, User.display_name)
             .join(User, RoomManager.user_id == User.id)
             .filter(RoomManager.room_id == room.id)
             .all()
@@ -1371,7 +1404,7 @@ def list_events(
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=422, detail="monthはYYYY-MM形式で指定してください")
     q = (
-        db.query(Event, User.username)
+        db.query(Event, User.username, User.display_name)
         .join(User, Event.user_id == User.id)
         .filter(User.site_id == user.site_id, Event.date.like(f"{month}-%"))
     )
@@ -1382,7 +1415,7 @@ def list_events(
         q = q.filter(Event.team_id.is_(None))
     rows = q.order_by(Event.date).all()
     # ルーム連携している予定にはルーム名を添える
-    room_ids = {e.room_id for e, _ in rows if e.room_id}
+    room_ids = {e.room_id for e, _, _ in rows if e.room_id}
     room_names = {
         r.id: r.name
         for r in db.query(Room).filter(Room.id.in_(room_ids)).all()
@@ -1392,11 +1425,11 @@ def list_events(
             "id": e.id,
             "title": e.title,
             "date": e.date,
-            "username": name,
+            "username": dn or name,
             "room_id": e.room_id,
             "room_name": room_names.get(e.room_id),
         }
-        for e, name in rows
+        for e, name, dn in rows
     ]
 
 
@@ -1429,7 +1462,7 @@ def list_posts(
 ):
     """掲示板の投稿一覧。team_id指定でチーム限定の掲示板"""
     q = (
-        db.query(Post, User.username)
+        db.query(Post, User.username, User.display_name)
         .join(User, Post.user_id == User.id)
         .filter(User.site_id == user.site_id)
     )
@@ -1443,10 +1476,10 @@ def list_posts(
         {
             "id": p.id,
             "body": p.body,
-            "username": name,
+            "username": dn or name,
             "created_at": p.created_at.isoformat(),
         }
-        for p, name in rows
+        for p, name, dn in rows
     ]
 
 
@@ -1496,6 +1529,7 @@ def _user_rows(db: Session, site_id: int) -> list[dict]:
         {
             "id": u.id,
             "username": u.username,
+            "display_name": u.display_name or "",
             "role": u.role,
             "is_active": u.is_active,
             "email": u.email or "",
@@ -1756,6 +1790,44 @@ def admin_set_active(
     return {"ok": True}
 
 
+def _apply_user_edit(db: Session, actor: User, target: User, body: UserEditIn) -> None:
+    """ユーザー編集の共通処理(表示名・ロール・有効/無効)。commitは呼び出し側"""
+    fields = body.model_fields_set
+    if "display_name" in fields:
+        new_name = (body.display_name or "").strip() or None
+        if new_name != target.display_name:
+            target.display_name = new_name
+            audit(db, actor, "user_update", f"{target.username} 表示名 → {new_name or '(ユーザー名に戻す)'}")
+    if "role" in fields and body.role is not None and body.role != target.role:
+        if target.role == "system_admin":
+            raise HTTPException(status_code=400, detail="システム管理者のロールは変更できません")
+        if target.id == actor.id:
+            raise HTTPException(status_code=400, detail="自分のロールは変更できません")
+        target.role = body.role
+        audit(db, actor, "role_change", f"{target.username} → {body.role}")
+    if "is_active" in fields and body.is_active is not None and body.is_active != target.is_active:
+        if target.role in ("site_admin", "system_admin"):
+            raise HTTPException(status_code=400, detail="管理者は無効化できません")
+        target.is_active = body.is_active
+        audit(db, actor, "user_enable" if body.is_active else "user_disable", target.username)
+
+
+@app.put("/api/admin/users/{user_id}")
+def admin_edit_user(
+    user_id: int,
+    body: UserEditIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    """ユーザー編集(表示名・ロール・有効/無効をまとめて変更)。サイト管理者のみ"""
+    target = db.get(User, user_id)
+    if target is None or target.site_id != admin.site_id:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    _apply_user_edit(db, admin, target, body)
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/admin/users/export")
 def admin_users_export(
     admin: User = Depends(site_admin_user), db: Session = Depends(get_db)
@@ -1767,14 +1839,15 @@ def admin_users_export(
         s = str(v if v is not None else "")
         return '"' + s.replace('"', '""') + '"'
 
-    lines = ["ID,ユーザー名,権限,状態,メール,登録日,セッション数"]
+    lines = ["ID,ユーザー名,表示名,権限,状態,メール,登録日,セッション数"]
     role_names = {
         "system_admin": "システム管理者", "site_admin": "サイト管理者",
         "moderator": "モデレータ", "user": "一般",
     }
     for u in _user_rows(db, admin.site_id):
         lines.append(",".join([
-            esc(u["id"]), esc(u["username"]), esc(role_names.get(u["role"], u["role"])),
+            esc(u["id"]), esc(u["username"]), esc(u["display_name"]),
+            esc(role_names.get(u["role"], u["role"])),
             esc("有効" if u["is_active"] else "無効"), esc(u["email"]),
             esc(u["created_at"]), esc(u["session_count"]),
         ]))
@@ -1806,7 +1879,7 @@ def admin_user_surveys(
         .all()
     )
     return {
-        "username": target.username,
+        "username": target.display_name or target.username,
         "surveys": [
             {
                 "room_id": s.room_id,
@@ -1879,15 +1952,10 @@ def admin_get_settings(admin: User = Depends(site_admin_user), db: Session = Dep
     return _settings_payload(db, admin.site_id)
 
 
-@app.put("/api/admin/settings")
-def admin_put_settings(
-    body: SettingsIn,
-    admin: User = Depends(site_admin_user),
-    db: Session = Depends(get_db),
-):
+def _apply_settings(db: Session, sid: int, body: SettingsIn) -> None:
+    """サイト設定の保存処理(管理画面・システム管理画面で共用)。commitは呼び出し側"""
     if not (body.mode_toon or body.mode_real or body.mode_still or body.mode_camera):
         raise HTTPException(status_code=422, detail="表示モードは少なくとも1つ有効にしてください")
-    sid = admin.site_id
     set_setting(db, sid, "session_minutes", str(body.session_minutes))
     for key in (
         "allow_registration", "role_matching", "anonymous_mode", "survey_enabled",
@@ -1907,6 +1975,15 @@ def admin_put_settings(
         site = db.get(Site, sid)
         if site:
             site.name = body.site_name.strip()
+
+
+@app.put("/api/admin/settings")
+def admin_put_settings(
+    body: SettingsIn,
+    admin: User = Depends(site_admin_user),
+    db: Session = Depends(get_db),
+):
+    _apply_settings(db, admin.site_id, body)
     audit(db, admin, "settings_update", "サイト設定を変更")
     db.commit()
     return {"ok": True}
@@ -1951,13 +2028,13 @@ def admin_list_teams(admin: User = Depends(site_admin_user), db: Session = Depen
         .all()
     )
     leaders: dict[int, list[str]] = {}
-    for m, name in (
-        db.query(TeamMember, User.username)
+    for m, name, dn in (
+        db.query(TeamMember, User.username, User.display_name)
         .join(User, TeamMember.user_id == User.id)
         .filter(TeamMember.is_leader.is_(True))
         .all()
     ):
-        leaders.setdefault(m.team_id, []).append(name)
+        leaders.setdefault(m.team_id, []).append(dn or name)
     rows = db.query(Team).filter(Team.site_id == admin.site_id).order_by(Team.id).all()
     return [
         {
@@ -2136,6 +2213,90 @@ def sysadmin_site_settings(
     if db.get(Site, site_id) is None:
         raise HTTPException(status_code=404, detail="サイトが存在しません")
     return _settings_payload(db, site_id)
+
+
+@app.get("/api/sysadmin/sites-export")
+def sysadmin_sites_export(
+    admin: User = Depends(system_admin_user), db: Session = Depends(get_db)
+):
+    """サイト一覧のCSVエクスポート"""
+    from sqlalchemy import func
+
+    from fastapi.responses import Response
+
+    def esc(v) -> str:
+        s = str(v if v is not None else "")
+        return '"' + s.replace('"', '""') + '"'
+
+    counts = dict(db.query(User.site_id, func.count(User.id)).group_by(User.site_id).all())
+    lines = ["ID,サイトID,サイト名,種別,ユーザー数,作成日"]
+    for s in db.query(Site).order_by(Site.id).all():
+        lines.append(",".join([
+            esc(s.id), esc(s.slug), esc(s.name),
+            esc("メイン" if s.is_main else "サブ"),
+            esc(counts.get(s.id, 0)), esc(s.created_at.isoformat()),
+        ]))
+    csv_data = "﻿" + "\n".join(lines)  # BOM付きでExcelの文字化けを防ぐ
+    audit(db, admin, "sites_export", f"{len(lines) - 1}件")
+    db.commit()
+    return Response(
+        content=csv_data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=sites.csv"},
+    )
+
+
+@app.put("/api/sysadmin/sites/{site_id}")
+def sysadmin_edit_site(
+    site_id: int,
+    body: SiteEditIn,
+    admin: User = Depends(system_admin_user),
+    db: Session = Depends(get_db),
+):
+    """サイトの表示名を変更する(サイトID=slugは内部の紐付けに使うため変更不可)"""
+    site = db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="サイトが存在しません")
+    site.name = body.name.strip()
+    audit(db, admin, "site_update", f"{site.slug} 名前 → {site.name}")
+    db.commit()
+    return {"ok": True, "id": site.id, "name": site.name}
+
+
+@app.put("/api/sysadmin/sites/{site_id}/users/{user_id}")
+def sysadmin_edit_user(
+    site_id: int,
+    user_id: int,
+    body: UserEditIn,
+    admin: User = Depends(system_admin_user),
+    db: Session = Depends(get_db),
+):
+    """任意サイトのユーザー編集(表示名・ロール・有効/無効)"""
+    if db.get(Site, site_id) is None:
+        raise HTTPException(status_code=404, detail="サイトが存在しません")
+    target = db.get(User, user_id)
+    if target is None or target.site_id != site_id:
+        raise HTTPException(status_code=404, detail="ユーザーが存在しません")
+    _apply_user_edit(db, admin, target, body)
+    db.commit()
+    return {"ok": True}
+
+
+@app.put("/api/sysadmin/sites/{site_id}/settings")
+def sysadmin_put_site_settings(
+    site_id: int,
+    body: SettingsIn,
+    admin: User = Depends(system_admin_user),
+    db: Session = Depends(get_db),
+):
+    """任意サイトの設定変更(管理画面のサイト設定と同じ項目)"""
+    site = db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="サイトが存在しません")
+    _apply_settings(db, site_id, body)
+    audit(db, admin, "settings_update", f"サイト設定を変更({site.slug})")
+    db.commit()
+    return {"ok": True}
 
 
 # --- デモデータ(本番運用では削除する → docs/TODO.md) ------------------------------
@@ -2428,7 +2589,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
         return
 
     await ws.accept()
-    client = Client(user.id, user.username, user.site_id, ws)
+    client = Client(user.id, user.display_name or user.username, user.site_id, ws)
     if not await manager.connect(client):
         await ws.send_json({"type": "error", "message": "別の端末で接続中です"})
         await ws.close(code=4002, reason="already connected")

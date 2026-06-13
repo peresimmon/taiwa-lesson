@@ -33,12 +33,22 @@
 </head>
 <body>
   <header>
-    <h1><span id="site-title">対話のおけいこ</span><small id="site-subtitle">TAIWA NO OKEIKO</small></h1>
+    <h1 id="site-home" title="ホームへ戻る"><span id="site-title">対話のおけいこ</span><small id="site-subtitle">TAIWA NO OKEIKO</small></h1>
     <div id="user-info" class="hidden">
-      <button id="user-name" class="user-name-btn" title="マイページ"></button>
       <button id="btn-admin" class="btn-text hidden">管理画面</button>
-      <button id="btn-sysadmin" class="btn-text hidden">システム管理</button>
-      <button id="btn-logout" class="btn-text">ログアウト</button>
+      <button id="btn-sysadmin" class="sysadmin-btn hidden" title="全サイトを横断する特権操作です">🛡 システム管理</button>
+      <div class="user-menu-wrap">
+        <button id="user-name" class="user-name-btn" title="アカウントメニュー"></button>
+        <div id="user-menu" class="user-menu hidden">
+          <div class="user-menu-head">
+            <strong id="um-name"></strong>
+            <small id="um-login"></small>
+          </div>
+          <button type="button" id="um-profile" class="user-menu-item">⚙️ 設定（マイページ）</button>
+          <hr class="user-menu-sep">
+          <button type="button" id="um-logout" class="user-menu-item um-danger">ログアウト</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -361,6 +371,13 @@
         <div class="panel">
           <h3>プロフィール</h3>
           <ul class="room-detail-list" id="profile-info"></ul>
+          <form id="display-name-form">
+            <label>表示名（掲示板やチームで表示される名前。空欄でユーザー名と同じ）
+              <input type="text" id="profile-display-name" maxlength="50">
+            </label>
+            <button type="submit" class="btn-small">表示名を保存</button>
+            <p id="dn-msg" class="note"></p>
+          </form>
           <form id="email-form">
             <label>メールアドレス（パスワードリセットの案内などに使用。空欄で削除）
               <input type="email" id="profile-email" maxlength="120">
@@ -439,6 +456,7 @@
                 <tr id="admin-user-head">
                   <th class="sortable" data-key="id">ID</th>
                   <th class="sortable" data-key="username">ユーザー名</th>
+                  <th class="sortable" data-key="display_name">表示名</th>
                   <th class="sortable" data-key="role">権限</th>
                   <th class="sortable" data-key="is_active">状態</th>
                   <th class="sortable" data-key="created_at">登録日</th>
@@ -593,15 +611,8 @@
               <input type="text" id="new-team-name" placeholder="チーム名" required maxlength="100">
               <button type="submit" class="btn-small">チーム作成</button>
             </form>
+            <p class="note" style="margin-bottom:6px">チーム名を押すと詳細を表示します。編集（リーダー・メンバー・チーム名の変更）は詳細から行えます。</p>
             <ul id="admin-team-list" class="event-list"></ul>
-            <div id="admin-team-detail" class="hidden">
-              <div class="team-detail-head"><strong id="admin-team-title"></strong></div>
-              <form id="admin-team-member-form" class="inline-form">
-                <input type="text" id="team-member-name" placeholder="ユーザー名" required minlength="2" maxlength="50">
-                <button type="submit" class="btn-small">メンバー追加</button>
-              </form>
-              <ul id="admin-team-members" class="history-list"></ul>
-            </div>
           </div>
 
           <div class="panel">
@@ -638,7 +649,8 @@
       <!-- ページ1: サイト一覧(横幅いっぱい) -->
       <div class="admin-page" id="sys-page-sites">
         <div class="panel panel-wide">
-          <h3>サイト一覧</h3>
+          <h3>サイト一覧 <button type="button" id="btn-export-sites" class="btn-small" style="float:right">CSVエクスポート</button></h3>
+          <p class="note" style="margin-bottom:8px">サイト名を押すと詳細（ユーザー一覧・設定確認）を表示します。</p>
           <div class="admin-table-wrap">
             <table class="admin-table">
               <thead>
@@ -683,27 +695,43 @@
         </div>
       </div>
 
-      <!-- ページ3: サイトの詳細(ユーザー・設定) -->
+      <!-- ページ3: サイトの詳細(ユーザー一覧・設定確認のタブ) -->
       <div class="admin-page hidden" id="sys-page-detail">
         <div class="panel panel-wide">
-          <h3>サイトのユーザー<span id="sys-users-site" class="admin-history-user"></span></h3>
-          <div class="admin-table-wrap">
-            <table class="admin-table">
-              <thead>
-                <tr><th>ID</th><th>ユーザー名</th><th>権限</th><th>回数</th></tr>
-              </thead>
-              <tbody id="sys-user-rows">
-                <tr><td colspan="4" class="empty-note">サイト一覧の「ユーザー」を押すと表示されます</td></tr>
-              </tbody>
-            </table>
+          <div class="sys-detail-head">
+            <div>
+              <h3 id="sys-detail-title">サイトの詳細</h3>
+              <p class="note" id="sys-detail-sub">サイト一覧からサイトを選択してください</p>
+            </div>
+            <button type="button" id="btn-site-rename" class="btn-small hidden">サイト名を変更</button>
           </div>
-        </div>
+          <nav class="admin-nav sys-detail-tabs">
+            <button type="button" class="admin-tab sys-detail-tab active" data-tab="users">ユーザー一覧</button>
+            <button type="button" class="admin-tab sys-detail-tab" data-tab="settings">設定確認</button>
+          </nav>
 
-        <div class="panel panel-wide">
-          <h3>サイトの設定<span id="sys-settings-site" class="admin-history-user"></span></h3>
-          <ul id="sys-settings-view" class="announcement-list">
-            <li class="empty-note">サイト一覧の「設定」を押すと表示されます</li>
-          </ul>
+          <div id="sys-detail-users">
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr><th>ID</th><th>ユーザー名</th><th>表示名</th><th>権限</th><th>状態</th><th>回数</th><th></th></tr>
+                </thead>
+                <tbody id="sys-user-rows">
+                  <tr><td colspan="7" class="empty-note">サイト一覧からサイトを選択してください</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="sys-detail-settings" class="hidden">
+            <div class="settings-toolbar">
+              <button type="button" id="btn-sys-settings-edit" class="btn-small hidden">編集</button>
+            </div>
+            <div id="sys-settings-body">
+              <p class="empty-note">サイト一覧からサイトを選択してください</p>
+            </div>
+            <p id="sys-settings-msg" class="note"></p>
+          </div>
         </div>
       </div>
       <p id="sysadmin-error" class="error"></p>

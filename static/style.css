@@ -131,7 +131,8 @@ header {
   background: var(--header-bg);
   color: var(--header-text);
 }
-header h1 { font-size: 1.15rem; font-weight: 600; letter-spacing: 0.5px; }
+header h1 { font-size: 1.15rem; font-weight: 600; letter-spacing: 0.5px; cursor: pointer; transition: opacity 0.15s; }
+header h1:hover { opacity: 0.85; }
 header h1 small { font-size: 0.7rem; font-weight: 400; opacity: 0.8; margin-left: 8px; letter-spacing: 1px; }
 
 #user-info { display: flex; align-items: center; gap: 12px; font-size: 0.88rem; color: rgba(255,255,255,0.9); }
@@ -141,6 +142,38 @@ header h1 small { font-size: 0.7rem; font-weight: 400; opacity: 0.8; margin-left
   cursor: pointer; font-family: inherit; transition: background 0.15s;
 }
 .user-name-btn:hover { background: rgba(255, 255, 255, 0.25); }
+
+/* システム管理ボタン: 全サイト横断の特権操作だと一目で分かる特別な見た目 */
+.sysadmin-btn {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1.5px solid #f0b429; color: #ffd97a;
+  padding: 5px 14px; border-radius: 999px;
+  font-size: 0.82rem; font-weight: 700; font-family: inherit;
+  cursor: pointer; transition: all 0.15s;
+  box-shadow: 0 0 6px rgba(240, 180, 41, 0.35);
+}
+.sysadmin-btn:hover { background: rgba(240, 180, 41, 0.22); box-shadow: 0 0 10px rgba(240, 180, 41, 0.55); }
+
+/* ユーザーメニュー(右上のアイコンから開くドロップダウン) */
+.user-menu-wrap { position: relative; }
+.user-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); min-width: 230px;
+  background: var(--card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow-strong); padding: 6px; z-index: 60;
+}
+.user-menu-head { padding: 10px 12px 12px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.user-menu-head strong { display: block; font-size: 0.95rem; }
+.user-menu-head small { color: var(--muted); font-size: 0.74rem; }
+.user-menu-item {
+  display: block; width: 100%; text-align: left;
+  padding: 9px 12px; border: none; border-radius: 8px;
+  background: none; color: var(--text); font-size: 0.9rem;
+  font-family: inherit; cursor: pointer;
+}
+.user-menu-item:hover { background: var(--primary-light); }
+.user-menu-item.um-danger { color: var(--danger); }
+.user-menu-sep { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 
 main {
   max-width: 1100px;
@@ -205,8 +238,10 @@ button { font-family: inherit; }
 .btn-secondary:hover { background: var(--warm-dark); }
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-danger:hover { opacity: 0.9; }
-.btn-text { background: none; border: none; color: rgba(255,255,255,0.85); cursor: pointer; font-size: 0.88rem; text-decoration: underline; text-underline-offset: 2px; }
-.btn-text:hover { color: #fff; }
+.btn-text { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 0.88rem; text-decoration: underline; text-underline-offset: 2px; }
+.btn-text:hover { color: var(--primary-dark); }
+header .btn-text { color: rgba(255,255,255,0.85); }
+header .btn-text:hover { color: #fff; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-row { display: flex; gap: 12px; margin-top: 18px; }
@@ -571,7 +606,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-top: 1.5px solid var(--border);
 }
 #team-list .role-tag, #team-member-list .role-tag,
-#admin-team-list .role-tag, #admin-team-members .role-tag {
+#admin-team-list .role-tag {
   font-size: 0.65rem; padding: 1px 8px; margin-left: 6px;
 }
 .event-room-select { float: none; max-width: 140px; flex: 0 0 auto; }
@@ -735,6 +770,23 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-radius: 999px; overflow: hidden;
 }
 #mic-level { height: 100%; width: 0%; background: var(--success); transition: width 0.08s; }
+
+/* システム管理: サイト詳細 */
+.sys-detail-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 12px; margin-bottom: 12px;
+}
+.sys-detail-head h3 { margin-bottom: 4px; border-bottom: none; padding-bottom: 0; }
+.sys-detail-tabs { margin-bottom: 14px; }
+.settings-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+#sys-settings-body .setting-group label { display: block; margin-bottom: 10px; font-size: 0.88rem; color: var(--muted); }
+#sys-settings-body .setting-group input[type="text"],
+#sys-settings-body .setting-group textarea {
+  display: block; width: 100%; margin-top: 4px; padding: 8px 10px;
+  border: 1.5px solid var(--border); border-radius: 8px; font-size: 0.92rem;
+  font-family: inherit; background: var(--bg); color: var(--text);
+}
+#sys-settings-body .setting-group .checkbox-label { display: flex; color: var(--text); }
 
 /* テーマ選択(マイページ) */
 .theme-grid {

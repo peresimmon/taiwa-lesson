@@ -49,7 +49,8 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), index=True)
-    username: Mapped[str] = mapped_column(String(50), index=True)
+    username: Mapped[str] = mapped_column(String(50), index=True)  # ログインID(変更不可)
+    display_name: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 表示名(未設定はusername)
     password_hash: Mapped[str] = mapped_column(String(255))
     # "system_admin" | "site_admin" | "moderator" | "user"
     role: Mapped[str] = mapped_column(String(20), default="user")
@@ -294,6 +295,8 @@ def _migrate() -> None:
             conn.execute(text("ALTER TABLE events ADD COLUMN room_id INTEGER"))
         if user_cols and "email" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
+        if user_cols and "display_name" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR(50)"))
         if user_cols and "is_active" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
         sv_cols = cols(conn, "surveys")
