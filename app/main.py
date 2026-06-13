@@ -334,6 +334,15 @@ class EventIn(BaseModel):
     repeat_until: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")  # 繰り返し終了日(含む)
 
 
+class EventEditIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")  # scope=oneのときのみ反映
+    start_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    team_id: int | None = None
+    room_id: int | None = None
+    scope: str = Field(default="one", pattern=r"^(one|series)$")  # この回だけ/繰り返し全体
+
+
 class AttendanceIn(BaseModel):
     status: str = Field(pattern=r"^(yes|no)$")  # 参加可否(RSVP)
 
@@ -1451,6 +1460,11 @@ def _event_payloads(db: Session, user: User, rows: list) -> list[dict]:
         r.id: r
         for r in db.query(Room).filter(Room.id.in_(room_ids)).all()
     } if room_ids else {}
+    team_ids = {e.team_id for e in events if e.team_id}
+    team_names = {
+        t.id: t.name
+        for t in db.query(Team).filter(Team.id.in_(team_ids)).all()
+    } if team_ids else {}
     # 各イベントの「参加(yes)」人数
     yes_counts = dict(
         db.query(EventAttendance.event_id, func.count(EventAttendance.id))
@@ -1492,7 +1506,10 @@ def _event_payloads(db: Session, user: User, rows: list) -> list[dict]:
             "yes_count": yes_counts.get(e.id, 0),
             "series_id": e.series_id,
             "recurrence": e.recurrence,
+            "team_id": e.team_id,
+            "team_name": team_names.get(e.team_id),
             "can_delete": can_delete,
+            "can_edit": can_delete,  # 編集権限は削除と同じ(作成者・管理者・チームリーダー)
         })
     return out
 
@@ -1693,6 +1710,44 @@ def create_event(
             first_id = ev.id
     db.commit()
     return {"ok": True, "id": first_id, "count": len(dates), "series_id": series}
+
+
+@app.put("/api/events/{event_id}")
+def update_event(
+    event_id: int,
+    body: EventEditIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    """イベントを編集する。scope=oneでその回だけ(日付も変更可)、
+    scope=seriesで繰り返し全体(タイトル・時刻・公開範囲・ルームを一括変更。各回の日付は維持)。
+    権限は作成者・サイト管理者・(チーム予定なら)そのチームのリーダー"""
+    event = db.get(Event, event_id)
+    author = db.get(User, event.user_id) if event else None
+    if event is None or author is None or author.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="イベントが存在しません")
+    if not _can_manage_event(db, user, event):
+        raise HTTPException(status_code=403, detail="このイベントを編集する権限がありません")
+    # 変更後の公開範囲・ルームの妥当性チェック
+    if body.team_id:
+        _require_team_member(db, user, body.team_id)
+    if body.room_id:
+        room = _room_or_404(db, user, body.room_id)
+        if not _room_visible(db, user, room):
+            raise HTTPException(status_code=403, detail="このルームには参加できません")
+    if body.scope == "series" and event.series_id:
+        targets = db.query(Event).filter(Event.series_id == event.series_id).all()
+    else:
+        targets = [event]
+    for ev in targets:
+        ev.title = body.title
+        ev.start_time = body.start_time
+        ev.team_id = body.team_id
+        ev.room_id = body.room_id
+        if body.scope == "one":
+            ev.date = body.date  # 単回のみ日付変更を反映(シリーズは各回の日付を維持)
+    db.commit()
+    return {"ok": True, "updated": len(targets)}
 
 
 @app.delete("/api/events/{event_id}")

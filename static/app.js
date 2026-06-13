@@ -1670,7 +1670,7 @@ function renderTodayEvents(events) {
       return `<li>
         ${time}
         <span class="today-main">
-          <span class="today-title">${escapeHtml(e.title)}</span>
+          <button class="ev-link today-title" data-evdetail="${e.id}" title="クリックで詳細">${escapeHtml(e.title)}</button>
           <span class="today-sub">${sub}</span>
         </span>
         <span class="today-actions">${rsvp}${join}${del}</span>
@@ -1704,6 +1704,10 @@ function renderTodayEvents(events) {
   // 削除(本日バナーからも。繰り返しは回/全体を選択)
   $("today-event-list").querySelectorAll("[data-evdelete]").forEach((btn) => {
     btn.onclick = () => deleteEvent(events.find((e) => e.id === parseInt(btn.dataset.evdelete, 10)));
+  });
+  // タイトルクリックで詳細モーダル
+  $("today-event-list").querySelectorAll("[data-evdetail]").forEach((btn) => {
+    btn.onclick = () => openEventDetail(events.find((e) => e.id === parseInt(btn.dataset.evdetail, 10)));
   });
 }
 
@@ -2294,23 +2298,146 @@ function renderCalendar() {
       .filter(Boolean)
       .join(" ");
     const dateStr = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    html += `<div class="${cls}" data-date="${dateStr}">${d}</div>`;
+    // マウスオーバー時の概要(その日の予定一覧)をtitle属性で表示
+    const summary = dayEventSummary(dateStr);
+    const titleAttr = summary ? ` title="${escapeHtml(summary)}"` : "";
+    html += `<div class="${cls}" data-date="${dateStr}"${titleAttr}>${d}</div>`;
   }
   $("calendar").innerHTML = html;
 
-  // 日付クリックでその日のイベント作成モーダルを開く
+  // 日付クリック: 予定があれば一覧モーダル、なければ作成モーダル
   $("calendar").querySelectorAll(".day").forEach((el) => {
-    el.onclick = () => openEventModal(el.dataset.date);
+    el.onclick = () => onCalendarDayClick(el.dataset.date);
   });
+}
+
+/* その日の予定の概要文字列(ホバー用) */
+function dayEventSummary(dateStr) {
+  const evs = monthEvents.filter((e) => e.date === dateStr);
+  if (!evs.length) return "";
+  return evs
+    .map((e) => `${e.start_time ? e.start_time : "終日"}  ${e.title}${e.recurrence ? " 🔁" : ""}`)
+    .join("\n");
+}
+
+function onCalendarDayClick(dateStr) {
+  const evs = monthEvents.filter((e) => e.date === dateStr);
+  if (!evs.length) {
+    openEventModal(dateStr);
+  } else if (evs.length === 1) {
+    openEventDetail(evs[0]);
+  } else {
+    openDayModal(dateStr, evs);
+  }
+}
+
+/* 1日に複数予定がある場合の一覧モーダル */
+function openDayModal(dateStr, evs) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const body = `<ul class="day-event-list">${evs
+    .map(
+      (e) => `<li><button class="day-event-row" data-evdetail="${e.id}">
+        <span class="today-time${e.start_time ? "" : " allday"}">${e.start_time || "終日"}</span>
+        <span>${e.recurrence ? '<span class="recur-tag">🔁</span>' : ""}${escapeHtml(e.title)}</span>
+      </button></li>`
+    )
+    .join("")}</ul>`;
+  openModal(`${y}年${m}月${d}日の予定`, body, [
+    { label: "＋ この日に予定を追加", primary: true, onClick: () => { closeModal(); openEventModal(dateStr); } },
+    { label: "閉じる", onClick: closeModal },
+  ]);
+  $("modal-body").querySelectorAll("[data-evdetail]").forEach((btn) => {
+    btn.onclick = () => openEventDetail(evs.find((e) => e.id === parseInt(btn.dataset.evdetail, 10)));
+  });
+}
+
+/* イベント詳細モーダル。編集権限があれば「編集」を表示 */
+function openEventDetail(ev) {
+  if (!ev) return;
+  const [y, m, d] = ev.date.split("-").map(Number);
+  const scope = ev.team_name ? `${escapeHtml(ev.team_name)} 限定` : "サイト全体";
+  const body = `<ul class="room-detail-list">
+    <li><span>日時</span><strong>${y}/${m}/${d}${ev.start_time ? ` ${ev.start_time}` : "（終日）"}</strong></li>
+    ${ev.recurrence ? `<li><span>繰り返し</span><strong>🔁 ${escapeHtml(ev.recurrence)}</strong></li>` : ""}
+    <li><span>公開範囲</span><strong>${scope}</strong></li>
+    ${ev.room_name ? `<li><span>連携ルーム</span><strong>🎥 ${escapeHtml(ev.room_name)}${ev.room_attendance_required ? "（出欠制）" : ""}</strong></li>` : ""}
+    <li><span>参加予定</span><strong>${ev.yes_count}人${ev.my_attendance ? `（あなた: ${ev.my_attendance === "yes" ? "参加" : "不参加"}）` : ""}</strong></li>
+    <li><span>作成者</span><strong>${escapeHtml(ev.username)}</strong></li>
+  </ul>`;
+  const actions = [];
+  if (ev.can_edit) actions.push({ label: "編集", primary: true, onClick: () => openEventEditForm(ev) });
+  if (ev.room_id && ev.room_name) {
+    actions.push({
+      label: "🎥 入室する", primary: true,
+      onClick: () => {
+        const room = myRooms.find((r) => r.id === ev.room_id);
+        if (room) openRoomModal(room);
+        else { closeModal(); $("lobby-error").textContent = "ルームが見つかりません(削除されたか、参加権限がありません)"; }
+      },
+    });
+  }
+  if (ev.can_delete) actions.push({ label: "削除", onClick: () => { closeModal(); deleteEvent(ev); } });
+  actions.push({ label: "閉じる", onClick: closeModal });
+  openModal(`予定: ${ev.title}`, body, actions);
+}
+
+/* イベント編集フォーム(詳細モーダル内) */
+function openEventEditForm(ev) {
+  const teamOpts =
+    '<option value="">サイト全体</option>' +
+    myTeams.map((t) => `<option value="${t.id}" ${ev.team_id === t.id ? "selected" : ""}>${escapeHtml(t.name)}限定</option>`).join("");
+  const roomOpts =
+    '<option value="">ルーム連携なし</option>' +
+    myRooms.map((r) => `<option value="${r.id}" ${ev.room_id === r.id ? "selected" : ""}>🎥${escapeHtml(r.name)}</option>`).join("");
+  const body = `<form id="event-edit-form">
+    <label>イベント名<input type="text" id="ee-title" required maxlength="200" value="${escapeHtml(ev.title)}"></label>
+    <div class="form-row">
+      <label>日付<input type="date" id="ee-date" required value="${ev.date}"></label>
+      <label>時刻（任意）<input type="time" id="ee-time" value="${ev.start_time || ""}"></label>
+    </div>
+    ${ev.series_id ? `<label>編集の範囲
+      <select id="ee-scope">
+        <option value="one">この回だけ</option>
+        <option value="series">繰り返し全体（日付以外）</option>
+      </select>
+    </label>` : ""}
+    <label>公開範囲<select id="ee-team">${teamOpts}</select></label>
+    <label>ルーム連携<select id="ee-room">${roomOpts}</select></label>
+    <p id="ee-msg" class="error"></p>
+  </form>`;
+  openModal(`予定を編集: ${ev.title}`, body, [
+    {
+      label: "保存", primary: true,
+      onClick: async () => {
+        const scope = $("ee-scope") ? $("ee-scope").value : "one";
+        try {
+          await api(`/api/events/${ev.id}`, "PUT", {
+            title: $("ee-title").value.trim(),
+            date: $("ee-date").value,
+            start_time: $("ee-time").value || null,
+            team_id: $("ee-team").value ? parseInt($("ee-team").value, 10) : null,
+            room_id: $("ee-room").value ? parseInt($("ee-room").value, 10) : null,
+            scope,
+          });
+          closeModal();
+          await loadEvents();
+          await loadTodayEvents();
+        } catch (err) {
+          $("ee-msg").textContent = err.message;
+        }
+      },
+    },
+    { label: "戻る", onClick: () => openEventDetail(ev) },
+  ]);
 }
 
 function renderEventList() {
   $("event-list").innerHTML = monthEvents.length
     ? monthEvents
         .map(
-          (e) => `<li>
+          (e) => `<li title="クリックで詳細">
             <span class="e-date">${parseInt(e.date.slice(5, 7), 10)}/${parseInt(e.date.slice(8), 10)}${e.start_time ? ` ${e.start_time}` : ""}</span>
-            <span>${e.recurrence ? `<span class="recur-tag" title="${escapeHtml(e.recurrence)}">🔁</span>` : ""}${escapeHtml(e.title)}${e.room_id && e.room_name ? ` <button class="btn-text" data-evroom="${e.room_id}">🎥${escapeHtml(e.room_name)}</button>` : ""}</span>
+            <span>${e.recurrence ? `<span class="recur-tag" title="${escapeHtml(e.recurrence)}">🔁</span>` : ""}<button class="ev-link" data-evdetail="${e.id}">${escapeHtml(e.title)}</button>${e.room_id && e.room_name ? ` <button class="btn-text" data-evroom="${e.room_id}">🎥${escapeHtml(e.room_name)}</button>` : ""}</span>
             <span class="e-user">by ${escapeHtml(e.username)}${e.can_delete ? ` <button class="btn-text danger" data-evdelete="${e.id}">削除</button>` : ""}</span>
           </li>`
         )
@@ -2327,6 +2454,9 @@ function renderEventList() {
         $("lobby-error").textContent = "ルームが見つかりません(削除されたか、参加権限がありません)";
       }
     };
+  });
+  $("event-list").querySelectorAll("[data-evdetail]").forEach((btn) => {
+    btn.onclick = () => openEventDetail(monthEvents.find((e) => e.id === parseInt(btn.dataset.evdetail, 10)));
   });
   $("event-list").querySelectorAll("[data-evdelete]").forEach((btn) => {
     btn.onclick = () => deleteEvent(monthEvents.find((e) => e.id === parseInt(btn.dataset.evdelete, 10)));

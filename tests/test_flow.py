@@ -1221,8 +1221,36 @@ def test_recurring_events(users, admin_headers):
         "title": "不正", "date": "2026-09-10", "repeat": "yearly"})
     check("不正なrepeatは422", r.status_code == 422, r.text)
 
-    # 削除: この回だけ(scope=one)
+    # 編集: この回だけ(scope=one。タイトル・時刻・日付を変更)
     one_id = evs[0]["id"]
+    r = requests.put(f"{BASE}/api/events/{one_id}", headers=h0, json={
+        "title": f"毎日_改_{suffix}", "date": evs[0]["date"], "start_time": "07:30", "scope": "one"})
+    check("この回だけ編集", r.status_code == 200 and r.json()["updated"] == 1, r.text)
+    refreshed = [e for e in month_events(h0, "2026-09") if e["series_id"] == evs[0]["series_id"]]
+    changed = [e for e in refreshed if e["id"] == one_id][0]
+    check("この回だけタイトル・時刻が変わる",
+          changed["title"] == f"毎日_改_{suffix}" and changed["start_time"] == "07:30", changed)
+    check("他の回は変わらない",
+          sum(1 for e in refreshed if e["title"] == title_d) == 6, refreshed)
+
+    # 編集: 繰り返し全体(scope=series。日付以外を一括変更)
+    r = requests.put(f"{BASE}/api/events/{refreshed[-1]['id']}", headers=h0, json={
+        "title": f"毎日_全_{suffix}", "date": refreshed[-1]["date"],
+        "start_time": "06:00", "scope": "series"})
+    check("繰り返し全体を編集", r.status_code == 200 and r.json()["updated"] == 7, r.text)
+    after = [e for e in month_events(h0, "2026-09") if e["series_id"] == evs[0]["series_id"]]
+    check("全回のタイトル・時刻が揃う",
+          all(e["title"] == f"毎日_全_{suffix}" and e["start_time"] == "06:00" for e in after)
+          and len({e["date"] for e in after}) == 7, after)
+
+    # 権限: 他人のイベントは編集できない(403)
+    r = requests.put(f"{BASE}/api/events/{evs_w[0]['id']}", headers=h1, json={
+        "title": "横取り", "date": evs_w[0]["date"], "scope": "one"})
+    check("他人のイベントは編集不可", r.status_code == 403, r.text)
+    title_d = f"毎日_全_{suffix}"  # 以降の削除テストは新タイトルで判定
+
+    # 削除: この回だけ(scope=one)
+    one_id = after[0]["id"]
     r = requests.delete(f"{BASE}/api/events/{one_id}?scope=one", headers=h0)
     check("この回だけ削除", r.status_code == 200 and r.json()["deleted"] == 1, r.text)
     remain = [e for e in month_events(h0, "2026-09") if e["title"] == title_d]

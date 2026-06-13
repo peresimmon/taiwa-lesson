@@ -618,6 +618,27 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* 繰り返しイベントの目印 */
 .recur-tag { margin-right: 3px; font-size: 0.85em; cursor: help; }
 
+/* クリックで詳細を開くイベント名リンク */
+.ev-link {
+  background: none; border: none; padding: 0; margin: 0; cursor: pointer;
+  font-family: inherit; font-size: inherit; color: var(--text);
+  text-align: left; text-decoration: underline; text-decoration-color: var(--border);
+  text-underline-offset: 2px;
+}
+.ev-link:hover { color: var(--primary); text-decoration-color: var(--primary); }
+.today-title.ev-link { font-weight: 600; }
+
+/* 日別予定モーダルの行 */
+.day-event-list { list-style: none; }
+.day-event-list li { margin-bottom: 6px; }
+.day-event-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  background: var(--bg); border: 1.5px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; cursor: pointer; font-family: inherit; font-size: 0.95rem;
+  color: var(--text); text-align: left; transition: all 0.15s;
+}
+.day-event-row:hover { border-color: var(--primary); background: var(--primary-light); }
+
 /* 本日の予定バナー */
 .today-panel { border-left: 4px solid var(--accent); }
 .today-event-list { list-style: none; }
