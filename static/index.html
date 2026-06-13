@@ -37,6 +37,7 @@
     <div id="user-info" class="hidden">
       <button id="btn-admin" class="btn-text hidden">管理画面</button>
       <button id="btn-sysadmin" class="sysadmin-btn hidden" title="全サイトを横断する特権操作です">🛡 システム管理</button>
+      <button id="btn-dev" class="dev-btn hidden" title="DBの中身を閲覧する開発者向けツール(参照のみ)">🛠 開発者</button>
       <div class="user-menu-wrap">
         <button id="user-name" class="user-name-btn" title="アカウントメニュー"></button>
         <div id="user-menu" class="user-menu hidden">
@@ -742,7 +743,51 @@
       </div>
       <p id="sysadmin-error" class="error"></p>
     </section>
+
+    <!-- 開発者モード(システム管理者・メインサイトのみ。DBブラウザ) -->
+    <section id="screen-dev" class="screen hidden">
+      <div class="panel admin-bar">
+        <h2>🛠 開発者モード（DBブラウザ）</h2>
+        <button id="btn-dev-back" class="btn-secondary">ホームへ戻る</button>
+      </div>
+      <div class="panel panel-wide">
+        <p class="note">各テーブルの中身を参照できます（<strong>読み取り専用・SELECTのみ</strong>。
+          最大1000行まで。<code>password_hash</code> 等の機微な値はマスクされます）。
+          テーブルを選ぶと、絞り込み・並び替えができるビューアが開きます。</p>
+        <div id="dev-table-list" class="dev-table-list"></div>
+        <p id="dev-error" class="error"></p>
+      </div>
+    </section>
   </main>
+
+  <!-- 開発者モード: DBビューア(広いモーダル) -->
+  <div id="dev-overlay" class="overlay hidden">
+    <div class="overlay-box dev-box">
+      <div class="dev-modal-head">
+        <h3 id="dev-modal-title"></h3>
+        <button type="button" id="dev-modal-close" class="btn-text">✕ 閉じる</button>
+      </div>
+      <div class="dev-filters">
+        <div class="setting-group-title">絞り込み条件（すべて満たす行を表示 / AND）</div>
+        <div id="dev-filter-rows"></div>
+        <button type="button" id="dev-add-filter" class="btn-text">＋ 条件を追加</button>
+        <div class="dev-run-row">
+          <label>表示件数
+            <input type="number" id="dev-limit" min="1" max="1000" value="200">
+          </label>
+          <button type="button" id="dev-run" class="btn-small">実行</button>
+          <span id="dev-result-info" class="note"></span>
+        </div>
+      </div>
+      <div class="dev-result-wrap">
+        <table class="admin-table dev-result-table">
+          <thead><tr id="dev-result-head"></tr></thead>
+          <tbody id="dev-result-rows"></tbody>
+        </table>
+      </div>
+      <p id="dev-modal-error" class="error"></p>
+    </div>
+  </div>
 
   <!-- 汎用モーダル(警告ポップアップ・チャットログ保存) -->
   <div id="modal" class="overlay hidden">

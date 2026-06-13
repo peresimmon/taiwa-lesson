@@ -23,6 +23,7 @@ from .auth import create_token, decode_token, hash_password, verify_password
 from .database import (
     Announcement,
     AuditLog,
+    Base,
     Block,
     CallPair,
     Event,
@@ -298,6 +299,7 @@ class TokenOut(BaseModel):
     role: str = "user"
     site: str = MAIN_SITE_SLUG
     site_name: str = ""
+    is_main_site: bool = False  # メインサイトか(開発者モードの表示判定に使う)
     must_change_password: bool = False
 
 
@@ -480,6 +482,24 @@ class UserCreateIn(BaseModel):
     email: str | None = Field(default=None, max_length=120)  # 任意。設定すると案内メールを送る
 
 
+class DevFilter(BaseModel):
+    """開発者モードDBブラウザの1条件(カラム×演算子×値)。生SQLは受け取らない"""
+    column: str = Field(max_length=64)
+    # eq=等しい / ne=等しくない / contains=含む / starts=で始まる /
+    # gt,ge,lt,le=大小比較 / is_null,is_not_null=NULL判定(値不要)
+    op: str = Field(pattern=r"^(eq|ne|contains|starts|gt|ge|lt|le|is_null|is_not_null)$")
+    value: str | None = Field(default=None, max_length=200)
+
+
+class DevQueryIn(BaseModel):
+    """開発者モードDBブラウザの検索条件。テーブル・絞り込み・並び替え・件数上限を指定する"""
+    table: str = Field(max_length=64)
+    filters: list[DevFilter] = Field(default_factory=list, max_length=20)  # AND結合
+    order_by: str | None = Field(default=None, max_length=64)
+    order_dir: str = Field(default="asc", pattern=r"^(asc|desc)$")
+    limit: int = Field(default=200, ge=1, le=1000)
+
+
 # --- 認証 ---------------------------------------------------------------------
 
 
@@ -517,6 +537,16 @@ def system_admin_user(user: User = Depends(active_user)) -> User:
     return user
 
 
+def dev_user(user: User = Depends(active_user), db: Session = Depends(get_db)) -> User:
+    """開発者モード(DBブラウザ)の権限。システム管理者かつメインサイトのみ"""
+    if user.role != "system_admin":
+        raise HTTPException(status_code=403, detail="システム管理者権限が必要です")
+    site = db.get(Site, user.site_id)
+    if site is None or not site.is_main:
+        raise HTTPException(status_code=403, detail="開発者モードはメインサイトでのみ利用できます")
+    return user
+
+
 def get_main_site(db: Session) -> Site:
     site = db.query(Site).filter(Site.slug == MAIN_SITE_SLUG).first()
     if site is None:
@@ -532,6 +562,7 @@ def token_response(user: User, site: Site) -> TokenOut:
         role=user.role,
         site=site.slug,
         site_name=site.name,
+        is_main_site=site.is_main,
         must_change_password=user.must_change_password,
     )
 
@@ -595,6 +626,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
         "created_at": user.created_at.isoformat(),
         "site": site.slug if site else "",
         "site_name": site.name if site else "",
+        "is_main_site": bool(site and site.is_main),
         "must_change_password": user.must_change_password,
     }
 
@@ -2668,6 +2700,129 @@ def sysadmin_put_site_settings(
     audit(db, admin, "settings_update", f"サイト設定を変更({site.slug})")
     db.commit()
     return {"ok": True}
+
+
+# --- 開発者モード(DBブラウザ。システム管理者かつメインサイトのみ) -----------------------
+#
+# 安全のための原則:
+#   * 生SQLは一切受け取らない。テーブル名・カラム名はSQLAlchemyのメタデータと照合し、
+#     SELECT文はCoreの式ビルダ+パラメータバインドで組み立てる(SQLインジェクション不可)
+#   * 参照のみ。LIMITを常に強制し、password_hash等の機微カラムはマスクして返す
+
+DEV_MAX_LIMIT = 1000           # 1回のクエリで返す最大行数
+DEV_MASKED_COLUMNS = {"password_hash"}  # 値を伏せて返すカラム名
+
+
+def _dev_serialize(column_name: str, value):
+    """1セルの値をJSONで返せる形に整える。機微カラムはマスクする"""
+    from datetime import date, datetime
+
+    if column_name in DEV_MASKED_COLUMNS and value is not None:
+        return "***"
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _dev_coerce(value: str):
+    """大小比較などのため、数値に見える文字列はint/floatへ寄せる"""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _dev_condition(col, op: str, value):
+    """1条件をSQLAlchemyの式に変換する。値はすべてパラメータとしてバインドされる"""
+    if op == "is_null":
+        return col.is_(None)
+    if op == "is_not_null":
+        return col.isnot(None)
+    v = value if value is not None else ""
+    if op in ("gt", "ge", "lt", "le", "eq", "ne"):
+        v = _dev_coerce(v)
+    if op == "eq":
+        return col == v
+    if op == "ne":
+        return col != v
+    if op == "contains":
+        return col.like(f"%{v}%")
+    if op == "starts":
+        return col.like(f"{v}%")
+    if op == "gt":
+        return col > v
+    if op == "ge":
+        return col >= v
+    if op == "lt":
+        return col < v
+    if op == "le":
+        return col <= v
+    raise HTTPException(status_code=422, detail="演算子が不正です")
+
+
+@app.get("/api/dev/tables")
+def dev_tables(admin: User = Depends(dev_user), db: Session = Depends(get_db)):
+    """テーブル一覧(カラム定義と概算行数)を返す"""
+    from sqlalchemy import func, select
+
+    out = []
+    for name, table in Base.metadata.tables.items():
+        try:
+            count = db.execute(select(func.count()).select_from(table)).scalar() or 0
+        except Exception:
+            count = None
+        out.append({
+            "name": name,
+            "rows": count,
+            "columns": [
+                {"name": c.name, "type": str(c.type)}
+                for c in table.columns
+            ],
+        })
+    out.sort(key=lambda t: t["name"])
+    return out
+
+
+@app.post("/api/dev/query")
+def dev_query(body: DevQueryIn, admin: User = Depends(dev_user), db: Session = Depends(get_db)):
+    """GUIフィルタの条件から安全なSELECTを組み立てて実行する(参照のみ・LIMIT強制)"""
+    from sqlalchemy import asc, desc, select
+
+    table = Base.metadata.tables.get(body.table)
+    if table is None:
+        raise HTTPException(status_code=404, detail="テーブルが存在しません")
+    valid_cols = set(table.columns.keys())
+
+    stmt = select(table)
+    for f in body.filters:
+        if f.column not in valid_cols:
+            raise HTTPException(status_code=422, detail=f"カラムが存在しません: {f.column}")
+        stmt = stmt.where(_dev_condition(table.columns[f.column], f.op, f.value))
+    if body.order_by:
+        if body.order_by not in valid_cols:
+            raise HTTPException(status_code=422, detail=f"並び替えカラムが存在しません: {body.order_by}")
+        col = table.columns[body.order_by]
+        stmt = stmt.order_by(desc(col) if body.order_dir == "desc" else asc(col))
+    limit = min(body.limit, DEV_MAX_LIMIT)
+    stmt = stmt.limit(limit + 1)  # 上限超過の検知用に1件多く取得する
+
+    result = db.execute(stmt)
+    columns = list(result.keys())
+    fetched = result.fetchall()
+    truncated = len(fetched) > limit
+    rows = [
+        [_dev_serialize(columns[i], v) for i, v in enumerate(row)]
+        for row in fetched[:limit]
+    ]
+    return {"columns": columns, "rows": rows, "truncated": truncated, "limit": limit}
 
 
 # --- デモデータ(本番運用では削除する → docs/TODO.md) ------------------------------

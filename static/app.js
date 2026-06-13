@@ -52,6 +52,8 @@ let username = localStorage.getItem("vm_username") || "";
 let displayName = "";
 /** 権限ロール。`"user" | "moderator" | "site_admin" | "system_admin"`。 @type {string} */
 let userRole = "user";
+/** ログイン中のサイトがメインサイトか。開発者モードの表示判定に使う。 @type {boolean} */
+let isMainSite = false;
 /** サイト設定から取得するセッション時間(分)。 @type {number} */
 let sessionMinutes = 10;
 
@@ -159,11 +161,12 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
-function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName) {
+function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisplayName, newIsMainSite) {
   token = newToken;
   username = newUsername;
   displayName = newDisplayName || newUsername;
   userRole = newRole || "user";
+  isMainSite = !!newIsMainSite;
   localStorage.setItem("vm_token", token);
   localStorage.setItem("vm_username", username);
   if (mustChangePassword) {
@@ -176,6 +179,8 @@ function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisp
   $("user-info").classList.remove("hidden");
   $("btn-admin").classList.toggle("hidden", !["site_admin", "system_admin"].includes(userRole));
   $("btn-sysadmin").classList.toggle("hidden", userRole !== "system_admin");
+  // 開発者モードはシステム管理者かつメインサイトのときだけ
+  $("btn-dev").classList.toggle("hidden", !(userRole === "system_admin" && isMainSite));
   $("dash-username").textContent = displayName;
   showLobby();
 }
@@ -210,8 +215,10 @@ function logout() {
   username = "";
   displayName = "";
   userRole = "user";
+  isMainSite = false;
   $("btn-admin").classList.add("hidden");
   $("btn-sysadmin").classList.add("hidden");
+  $("btn-dev").classList.add("hidden");
   closeUserMenu();
   localStorage.removeItem("vm_token");
   localStorage.removeItem("vm_username");
@@ -281,7 +288,7 @@ $("auth-form").onsubmit = async (e) => {
     };
     if (IS_SUB_LOGIN) body.site = $("auth-site").value.trim();
     const data = await api(`/api/${authMode === "login" ? "login" : "register"}`, "POST", body);
-    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name);
+    setLoggedIn(data.token, data.username, data.role, data.must_change_password, data.display_name, data.is_main_site);
   } catch (err) {
     $("auth-error").textContent = err.message;
   }
@@ -299,7 +306,7 @@ $("password-form").onsubmit = async (e) => {
     $("pw-current").value = "";
     $("pw-new").value = "";
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username);
+    setLoggedIn(token, me.username, me.role, false, me.display_name || me.username, me.is_main_site);
   } catch (err) {
     $("pw-error").textContent = err.message;
   }
@@ -3951,6 +3958,160 @@ $("sys-site-form").onsubmit = async (e) => {
   }
 };
 
+// ---- 開発者モード(DBブラウザ) ---------------------------------------------------
+// 生SQLは送らない。テーブル/カラムはサーバー側でメタデータ照合され、
+// GUIで作った条件(カラム×演算子×値)を安全なSELECTに組み立てて実行する。
+
+/** DBビューアの演算子の選択肢。値はサーバーのDevFilter.opと対応。 @type {Array<{op: string, label: string, noValue?: boolean}>} */
+const DEV_OPS = [
+  { op: "eq", label: "= 等しい" },
+  { op: "ne", label: "≠ 等しくない" },
+  { op: "contains", label: "含む" },
+  { op: "starts", label: "で始まる" },
+  { op: "gt", label: "> より大きい" },
+  { op: "ge", label: "≥ 以上" },
+  { op: "lt", label: "< より小さい" },
+  { op: "le", label: "≤ 以下" },
+  { op: "is_null", label: "が空(NULL)", noValue: true },
+  { op: "is_not_null", label: "が空でない", noValue: true },
+];
+
+let devTables = [];      // テーブル一覧のキャッシュ
+let devTable = null;     // 表示中のテーブル定義 { name, columns, rows }
+let devOrder = { column: null, dir: "asc" };  // 並び替え状態
+
+$("btn-dev").onclick = () => showDev();
+$("btn-dev-back").onclick = () => showLobby();
+$("dev-modal-close").onclick = () => $("dev-overlay").classList.add("hidden");
+$("dev-add-filter").onclick = () => addDevFilterRow();
+$("dev-run").onclick = () => runDevQuery();
+
+async function showDev() {
+  $("dev-error").textContent = "";
+  showScreen("dev");
+  try {
+    devTables = await api("/api/dev/tables");
+    $("dev-table-list").innerHTML = devTables
+      .map(
+        (t) => `<button type="button" class="dev-table-card" data-table="${escapeHtml(t.name)}">
+          <strong>${escapeHtml(t.name)}</strong>
+          <small>${t.rows == null ? "?" : t.rows} 行 ・ ${t.columns.length} 列</small>
+        </button>`
+      )
+      .join("");
+    $("dev-table-list").querySelectorAll("[data-table]").forEach((btn) => {
+      btn.onclick = () => openDevViewer(btn.dataset.table);
+    });
+  } catch (err) {
+    $("dev-error").textContent = err.message;
+  }
+}
+
+/* テーブルのDBビューアモーダルを開く */
+function openDevViewer(tableName) {
+  devTable = devTables.find((t) => t.name === tableName);
+  if (!devTable) return;
+  devOrder = { column: null, dir: "asc" };
+  $("dev-modal-title").textContent = `テーブル: ${tableName}`;
+  $("dev-modal-error").textContent = "";
+  $("dev-result-info").textContent = "";
+  $("dev-filter-rows").innerHTML = "";
+  $("dev-result-head").innerHTML = "";
+  $("dev-result-rows").innerHTML = "";
+  $("dev-limit").value = 200;
+  addDevFilterRow();  // 空の条件行を1つ用意
+  $("dev-overlay").classList.remove("hidden");
+  runDevQuery();      // 初期表示(条件なし)
+}
+
+/* 条件行(カラム×演算子×値)を1つ追加する */
+function addDevFilterRow() {
+  if (!devTable) return;
+  const row = document.createElement("div");
+  row.className = "dev-filter-row";
+  const colOpts = devTable.columns.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join("");
+  const opOpts = DEV_OPS.map((o) => `<option value="${o.op}">${o.label}</option>`).join("");
+  row.innerHTML = `
+    <select class="dev-f-col">${colOpts}</select>
+    <select class="dev-f-op">${opOpts}</select>
+    <input class="dev-f-val" type="text" placeholder="値">
+    <button type="button" class="dev-f-del" title="この条件を削除">✕</button>`;
+  // 値が不要な演算子(NULL判定)のときは値入力を無効化する
+  const opSel = row.querySelector(".dev-f-op");
+  const valInput = row.querySelector(".dev-f-val");
+  opSel.onchange = () => {
+    const noVal = DEV_OPS.find((o) => o.op === opSel.value)?.noValue;
+    valInput.disabled = !!noVal;
+    if (noVal) valInput.value = "";
+  };
+  row.querySelector(".dev-f-del").onclick = () => row.remove();
+  $("dev-filter-rows").appendChild(row);
+}
+
+/* 現在の条件でクエリを実行し、結果テーブルを描画する */
+async function runDevQuery() {
+  if (!devTable) return;
+  $("dev-modal-error").textContent = "";
+  const filters = [];
+  $("dev-filter-rows").querySelectorAll(".dev-filter-row").forEach((row) => {
+    const column = row.querySelector(".dev-f-col").value;
+    const op = row.querySelector(".dev-f-op").value;
+    const value = row.querySelector(".dev-f-val").value;
+    const noVal = DEV_OPS.find((o) => o.op === op)?.noValue;
+    if (!noVal && value === "") return;  // 値が空の条件は無視(NULL判定は除く)
+    filters.push({ column, op, value: noVal ? null : value });
+  });
+  const payload = {
+    table: devTable.name,
+    filters,
+    limit: parseInt($("dev-limit").value || "200", 10),
+  };
+  if (devOrder.column) {
+    payload.order_by = devOrder.column;
+    payload.order_dir = devOrder.dir;
+  }
+  try {
+    const res = await api("/api/dev/query", "POST", payload);
+    renderDevResult(res);
+  } catch (err) {
+    $("dev-modal-error").textContent = err.message;
+  }
+}
+
+function renderDevResult(res) {
+  // 見出し: クリックで昇順/降順ソート(同じ列を再クリックで反転)
+  $("dev-result-head").innerHTML = res.columns
+    .map((c) => {
+      const arrow = devOrder.column === c ? (devOrder.dir === "asc" ? " ▲" : " ▼") : "";
+      return `<th data-col="${escapeHtml(c)}">${escapeHtml(c)}${arrow}</th>`;
+    })
+    .join("");
+  $("dev-result-head").querySelectorAll("[data-col]").forEach((th) => {
+    th.onclick = () => {
+      const col = th.dataset.col;
+      if (devOrder.column === col) {
+        devOrder.dir = devOrder.dir === "asc" ? "desc" : "asc";
+      } else {
+        devOrder = { column: col, dir: "asc" };
+      }
+      runDevQuery();
+    };
+  });
+  $("dev-result-rows").innerHTML = res.rows.length
+    ? res.rows
+        .map(
+          (r) => `<tr>${r
+            .map((v) => v === null
+              ? '<td class="dev-cell-null">NULL</td>'
+              : `<td title="${escapeHtml(String(v))}">${escapeHtml(String(v))}</td>`)
+            .join("")}</tr>`
+        )
+        .join("")
+    : `<tr><td colspan="${res.columns.length}" class="empty-note">該当する行がありません</td></tr>`;
+  $("dev-result-info").textContent =
+    `${res.rows.length}行を表示${res.truncated ? `(上限${res.limit}行で打ち切り)` : ""}`;
+}
+
 // ---- マイページ(右上のユーザーメニュー「設定」から) -------------------------------
 $("btn-profile-back").onclick = () => showLobby();
 
@@ -4078,7 +4239,7 @@ if ("serviceWorker" in navigator) {
   }
   try {
     const me = await api("/api/me");
-    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username);
+    setLoggedIn(token, me.username, me.role, me.must_change_password, me.display_name || me.username, me.is_main_site);
   } catch {
     logout();
   }

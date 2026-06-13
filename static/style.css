@@ -154,6 +154,17 @@ header h1 small { font-size: 0.7rem; font-weight: 400; opacity: 0.8; margin-left
 }
 .sysadmin-btn:hover { background: rgba(240, 180, 41, 0.22); box-shadow: 0 0 10px rgba(240, 180, 41, 0.55); }
 
+/* 開発者ボタン: システム管理と並んで目立つよう、緑系の特別な見た目にする */
+.dev-btn {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1.5px solid #4ade80; color: #b6f5cf;
+  padding: 5px 14px; border-radius: 999px;
+  font-size: 0.82rem; font-weight: 700; font-family: inherit;
+  cursor: pointer; transition: all 0.15s;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.35);
+}
+.dev-btn:hover { background: rgba(74, 222, 128, 0.2); box-shadow: 0 0 10px rgba(74, 222, 128, 0.55); }
+
 /* ユーザーメニュー(右上のアイコンから開くドロップダウン) */
 .user-menu-wrap { position: relative; }
 .user-menu {
@@ -852,6 +863,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-family: inherit; background: var(--bg); color: var(--text);
 }
 #sys-settings-body .setting-group .checkbox-label { display: flex; color: var(--text); }
+
+/* 開発者モード(DBブラウザ) */
+.dev-table-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;
+}
+.dev-table-card {
+  border: 1.5px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  background: var(--bg); cursor: pointer; font-family: inherit; text-align: left;
+  transition: all 0.15s;
+}
+.dev-table-card:hover { border-color: var(--primary); transform: translateY(-2px); box-shadow: var(--shadow); }
+.dev-table-card strong { display: block; color: var(--primary-dark); font-size: 0.95rem; word-break: break-all; }
+.dev-table-card small { color: var(--muted); font-size: 0.76rem; }
+
+/* DBビューアモーダル(広い) */
+.dev-box { max-width: 960px; width: 96vw; }
+.dev-modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.dev-filters { margin: 10px 0 12px; }
+.dev-filter-row { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
+.dev-filter-row select, .dev-filter-row input {
+  padding: 7px 9px; border: 1.5px solid var(--border); border-radius: 8px;
+  font-family: inherit; font-size: 0.85rem; background: var(--bg); color: var(--text);
+}
+.dev-filter-row .dev-f-col { flex: 1; min-width: 120px; }
+.dev-filter-row .dev-f-val { flex: 1; min-width: 120px; }
+.dev-filter-row .dev-f-del { color: var(--danger); cursor: pointer; border: none; background: none; font-size: 1rem; }
+.dev-run-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+.dev-run-row label { font-size: 0.82rem; color: var(--muted); }
+.dev-run-row input[type="number"] { width: 90px; padding: 7px 9px; border: 1.5px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-family: inherit; }
+.dev-result-wrap { overflow: auto; max-height: 52vh; border: 1px solid var(--border); border-radius: 10px; }
+.dev-result-table { font-size: 0.8rem; white-space: nowrap; }
+.dev-result-table th {
+  position: sticky; top: 0; background: var(--card); cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+.dev-result-table th:hover { color: var(--primary); }
+.dev-result-table td { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.dev-cell-null { color: var(--muted); font-style: italic; }
 
 /* テーマ選択(マイページ) */
 .theme-grid {

@@ -1282,6 +1282,57 @@ def test_recurring_events(users, admin_headers):
         requests.delete(f"{BASE}/api/events/{m_ev['id']}?scope=series", headers=h0)
 
 
+def test_dev_mode(users, admin_headers):
+    print("[20] 開発者モード(DBブラウザ)")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+
+    # 権限: 一般ユーザーは403
+    r = requests.get(f"{BASE}/api/dev/tables", headers=h0)
+    check("一般ユーザーは開発者APIにアクセス不可", r.status_code == 403, r.text)
+
+    # システム管理者(メインサイト): テーブル一覧
+    r = requests.get(f"{BASE}/api/dev/tables", headers=admin_headers)
+    tables = r.json()
+    names = {t["name"] for t in tables}
+    check("テーブル一覧が返る", r.status_code == 200 and "users" in names and "events" in names, names)
+    users_meta = next(t for t in tables if t["name"] == "users")
+    check("カラム定義と行数が返る",
+          any(c["name"] == "username" for c in users_meta["columns"]) and users_meta["rows"] >= 1, users_meta)
+
+    # クエリ: フィルタ + 並び替え
+    r = requests.post(f"{BASE}/api/dev/query", headers=admin_headers, json={
+        "table": "users",
+        "filters": [{"column": "role", "op": "eq", "value": "system_admin"}],
+        "order_by": "id", "order_dir": "asc", "limit": 10})
+    d = r.json()
+    check("フィルタ付きクエリ", r.status_code == 200 and "username" in d["columns"] and len(d["rows"]) >= 1, d)
+
+    # password_hash はマスクされる
+    if "password_hash" in d["columns"]:
+        idx = d["columns"].index("password_hash")
+        check("password_hashはマスクされる", all(row[idx] == "***" for row in d["rows"]), d["rows"])
+
+    # containsフィルタ
+    r = requests.post(f"{BASE}/api/dev/query", headers=admin_headers, json={
+        "table": "users", "filters": [{"column": "username", "op": "contains", "value": "admin"}]})
+    check("containsフィルタ", r.status_code == 200 and len(r.json()["rows"]) >= 1, r.text)
+
+    # 存在しないテーブル・カラムは弾く
+    check("存在しないテーブルは404",
+          requests.post(f"{BASE}/api/dev/query", headers=admin_headers, json={"table": "no_such"}).status_code == 404)
+    check("存在しないカラムは422",
+          requests.post(f"{BASE}/api/dev/query", headers=admin_headers,
+                        json={"table": "users", "filters": [{"column": "x;DROP", "op": "eq", "value": "1"}]}).status_code == 422)
+    # 不正な演算子は422(Pydanticのpatternで弾く)
+    check("不正な演算子は422",
+          requests.post(f"{BASE}/api/dev/query", headers=admin_headers,
+                        json={"table": "users", "filters": [{"column": "id", "op": "drop", "value": "1"}]}).status_code == 422)
+
+    # LIMITは強制的に上限内に収まる
+    r = requests.post(f"{BASE}/api/dev/query", headers=admin_headers, json={"table": "users", "limit": 5})
+    check("LIMITが効く", r.status_code == 200 and len(r.json()["rows"]) <= 5, r.text)
+
+
 def test_demo_data(users, admin_headers):
     print("[17] デモデータ生成・削除")
     user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1363,6 +1414,7 @@ async def main():
     test_team_v2_and_profile(users, admin_headers)
     await test_events_attendance(users, admin_headers)
     test_recurring_events(users, admin_headers)
+    test_dev_mode(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")
