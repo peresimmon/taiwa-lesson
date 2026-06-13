@@ -693,6 +693,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 1rem; margin-bottom: 6px;
 }
+/* 編集・削除ボタン(右上に絶対配置)と重ならないよう、ボタンがあるカードは
+   見出し行の右側に余白を確保する */
+.room-card:has(.room-card-actions) .room-card-head { padding-right: 78px; }
 .room-card-head strong { color: var(--primary-dark); }
 .room-card-topic {
   font-size: 0.85rem; color: var(--text); margin-bottom: 6px;
