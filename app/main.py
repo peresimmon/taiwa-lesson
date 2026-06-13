@@ -2870,11 +2870,11 @@ DEMO_POSTS = [
 DEMO_EVENTS = ["みんなで傾聴会", "ふりかえり共有会", "対話のコツ勉強会", "新メンバー歓迎会"]
 
 
-@app.post("/api/sysadmin/demo-data", status_code=201)
+@app.post("/api/dev/demo-data", status_code=201)
 def create_demo_data(
-    admin: User = Depends(system_admin_user), db: Session = Depends(get_db)
+    admin: User = Depends(dev_user), db: Session = Depends(get_db)
 ):
-    """デモ用のユーザー・チーム・履歴などを一括生成する(管理者のサイトに作成)"""
+    """デモ用のユーザー・チーム・履歴などを一括生成する(開発者ページから。メインサイトに作成)"""
     from datetime import timedelta
 
     sid = admin.site_id
@@ -2992,11 +2992,49 @@ def create_demo_data(
             event_id=morning_event.id, user_id=m.id,
             status="no" if j == 4 else "yes",
         ))
+
+    # administratorをリーダーにしたチーム + ルーム + イベント(動作確認用)。
+    # ログイン中のadministratorがダッシュボードですぐ確認できるデータを用意する
+    admin_team = Team(site_id=sid, name="デモ_管理者チーム",
+                      description="administratorがリーダーのデモチーム")
+    db.add(admin_team)
+    db.flush()
+    db.add(TeamMember(team_id=admin_team.id, user_id=admin.id, is_leader=True))
+    for m in demo_users[5:8]:  # デモメンバーを数名追加
+        db.add(TeamMember(team_id=admin_team.id, user_id=m.id, is_leader=False))
+    teams.append(admin_team)
+    # 出欠制ではない通常ルーム(本日のイベントから「入室する」ですぐ参加できる)
+    admin_room = Room(
+        site_id=sid, creator_id=admin.id, name="デモ_管理者ルーム",
+        team_id=admin_team.id, topic="今日の気づきをシェア", session_minutes=10,
+    )
+    db.add(admin_room)
+    db.flush()
+    # 本日のミーティング(ルーム連携)。administratorは「参加」済み
+    admin_today = Event(
+        user_id=admin.id, title="管理者チーム ミーティング",
+        date=now.date().isoformat(), start_time="13:00",
+        team_id=admin_team.id, room_id=admin_room.id,
+    )
+    db.add(admin_today)
+    db.flush()
+    db.add(EventAttendance(event_id=admin_today.id, user_id=admin.id, status="yes"))
+    for m in demo_users[5:7]:
+        db.add(EventAttendance(event_id=admin_today.id, user_id=m.id, status="yes"))
+    # 掲示板・来週の予定(チーム限定)も用意
+    db.add(Post(user_id=admin.id, team_id=admin_team.id,
+                body="(チーム限定)デモ用の管理者チームです。ルームから通話を試せます"))
+    db.add(Event(
+        user_id=admin.id, title="管理者チーム ふりかえり",
+        date=(now + timedelta(days=7)).date().isoformat(), start_time="15:00",
+        team_id=admin_team.id, room_id=admin_room.id,
+    ))
+
     db.add(
         Announcement(
             site_id=sid,
             title="【デモ】サンプルのお知らせ",
-            body="これはデモデータです。システム管理画面の「デモデータを削除」でまとめて削除できます。",
+            body="これはデモデータです。開発者ページの「デモデータを削除」でまとめて削除できます。",
         )
     )
 
@@ -3059,20 +3097,20 @@ def create_demo_data(
         "users": len(demo_users),
         "teams": len(teams),
         "sessions": session_count,
-        "posts": len(DEMO_POSTS) + 1,
+        "posts": len(DEMO_POSTS) + 2,
         "events": len(DEMO_EVENTS),
-        "rooms": 1,
+        "rooms": 3,  # 雑談・朝会・管理者ルーム
         "subsite": DEMO_SITE_SLUG,
         "subsite_users": len(sub_users) + 1,  # サイト管理者を含む
         "subsite_sessions": sub_sessions,
     }
 
 
-@app.delete("/api/sysadmin/demo-data")
+@app.delete("/api/dev/demo-data")
 def delete_demo_data(
-    admin: User = Depends(system_admin_user), db: Session = Depends(get_db)
+    admin: User = Depends(dev_user), db: Session = Depends(get_db)
 ):
-    """生成したデモデータをまとめて削除する"""
+    """生成したデモデータをまとめて削除する(開発者ページから)"""
     from sqlalchemy import or_
 
     sid = admin.site_id
@@ -3114,6 +3152,12 @@ def delete_demo_data(
     for team in demo_teams:
         db.query(TeamMember).filter(TeamMember.team_id == team.id).delete(synchronize_session=False)
         db.query(Post).filter(Post.team_id == team.id).delete(synchronize_session=False)
+        # チーム限定イベントのRSVP(administratorなどデモ外ユーザー分も含む)を先に消す
+        team_event_ids = [e.id for e in db.query(Event).filter(Event.team_id == team.id).all()]
+        if team_event_ids:
+            db.query(EventAttendance).filter(
+                EventAttendance.event_id.in_(team_event_ids)
+            ).delete(synchronize_session=False)
         db.query(Event).filter(Event.team_id == team.id).delete(synchronize_session=False)
         db.delete(team)
     demo_rooms = db.query(Room).filter(

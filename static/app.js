@@ -3921,34 +3921,6 @@ function renderSysSettings() {
   };
 }
 
-// --- デモデータ(本番運用では削除する) ---
-$("btn-demo-create").onclick = async () => {
-  if (!confirm("デモ用のユーザー・チーム・履歴などをメインサイトに生成します。よろしいですか？")) return;
-  $("demo-msg").textContent = "生成中…";
-  try {
-    const r = await api("/api/sysadmin/demo-data", "POST");
-    $("demo-msg").textContent =
-      `生成しました: ユーザー${r.users}名 / チーム${r.teams}件 / セッション${r.sessions}回 / ` +
-      `投稿${r.posts}件 / イベント${r.events}件 / ルーム${r.rooms}件 / ` +
-      `サブサイト「${r.subsite}」(ユーザー${r.subsite_users}名・セッション${r.subsite_sessions}回)`;
-    await loadSysSites();
-  } catch (err) {
-    $("demo-msg").textContent = err.message;
-  }
-};
-
-$("btn-demo-delete").onclick = async () => {
-  if (!confirm("生成したデモデータ(demo_ユーザー・デモ_チームなど)をすべて削除します。よろしいですか？")) return;
-  $("demo-msg").textContent = "削除中…";
-  try {
-    const r = await api("/api/sysadmin/demo-data", "DELETE");
-    $("demo-msg").textContent = `削除しました: ユーザー${r.users}名 / チーム${r.teams}件 / ルーム${r.rooms}件`;
-    await loadSysSites();
-  } catch (err) {
-    $("demo-msg").textContent = err.message;
-  }
-};
-
 $("sys-site-form").onsubmit = async (e) => {
   e.preventDefault();
   $("sysadmin-error").textContent = "";
@@ -3998,6 +3970,34 @@ $("btn-dev-back").onclick = () => showLobby();
 $("dev-modal-close").onclick = () => $("dev-overlay").classList.add("hidden");
 $("dev-add-filter").onclick = () => addDevFilterRow();
 $("dev-run").onclick = () => runDevQuery();
+
+// --- デモデータ(開発者ページ。本番運用では撤去する) ---
+$("btn-demo-create").onclick = async () => {
+  if (!confirm("デモ用のユーザー・チーム・ルーム・履歴などをメインサイトに生成します。よろしいですか？")) return;
+  $("demo-msg").textContent = "生成中…";
+  try {
+    const r = await api("/api/dev/demo-data", "POST");
+    $("demo-msg").textContent =
+      `生成しました: ユーザー${r.users}名 / チーム${r.teams}件 / セッション${r.sessions}回 / ` +
+      `投稿${r.posts}件 / イベント${r.events}件 / ルーム${r.rooms}件 / ` +
+      `サブサイト「${r.subsite}」(ユーザー${r.subsite_users}名・セッション${r.subsite_sessions}回)`;
+    await showDev();  // テーブル一覧の件数を更新
+  } catch (err) {
+    $("demo-msg").textContent = err.message;
+  }
+};
+
+$("btn-demo-delete").onclick = async () => {
+  if (!confirm("生成したデモデータ(デモ_ユーザー・デモ_チームなど)をすべて削除します。よろしいですか？")) return;
+  $("demo-msg").textContent = "削除中…";
+  try {
+    const r = await api("/api/dev/demo-data", "DELETE");
+    $("demo-msg").textContent = `削除しました: ユーザー${r.users}名 / チーム${r.teams}件 / ルーム${r.rooms}件`;
+    await showDev();
+  } catch (err) {
+    $("demo-msg").textContent = err.message;
+  }
+};
 
 async function showDev() {
   $("dev-error").textContent = "";

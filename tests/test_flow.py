@@ -1397,17 +1397,17 @@ def test_demo_data(users, admin_headers):
     print("[17] デモデータ生成・削除")
     user_headers = {"Authorization": f"Bearer {users[0]['token']}"}
 
-    # 一般ユーザーは生成不可
-    r = requests.post(f"{BASE}/api/sysadmin/demo-data", headers=user_headers)
+    # 一般ユーザーは生成不可(開発者APIに移行)
+    r = requests.post(f"{BASE}/api/dev/demo-data", headers=user_headers)
     check("一般ユーザーは生成不可", r.status_code == 403, r.text)
 
     # 生成
-    r = requests.post(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
+    r = requests.post(f"{BASE}/api/dev/demo-data", headers=admin_headers)
     check("デモデータ生成", r.status_code == 201, r.text)
     counts = r.json()
     check("生成件数が返る",
-          counts["users"] == 12 and counts["teams"] == 3 and counts["sessions"] >= 30, counts)
-    r = requests.post(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
+          counts["users"] == 12 and counts["teams"] == 4 and counts["sessions"] >= 30, counts)
+    r = requests.post(f"{BASE}/api/dev/demo-data", headers=admin_headers)
     check("二重生成は409", r.status_code == 409, r.text)
 
     # 各データが見える
@@ -1416,8 +1416,19 @@ def test_demo_data(users, admin_headers):
     check("デモユーザーが一覧に出る", len(demo_users) == 12, len(demo_users))
     check("モデレータも含まれる", any(u["role"] == "moderator" for u in demo_users), demo_users[:3])
     r = requests.get(f"{BASE}/api/admin/teams", headers=admin_headers)
-    check("デモチームが作られる",
-          sum(1 for t in r.json() if t["name"].startswith("デモ_")) == 3, r.text)
+    demo_teams_list = [t for t in r.json() if t["name"].startswith("デモ_")]
+    check("デモチームが作られる(管理者チーム含む4件)", len(demo_teams_list) == 4, r.text)
+    admin_team = next((t for t in demo_teams_list if t["name"] == "デモ_管理者チーム"), None)
+    check("administratorがリーダーのチームがある",
+          admin_team is not None and "administrator" in admin_team.get("leaders", []), admin_team)
+    # administratorのダッシュボードに、そのチームのルームと本日の予定が見える
+    today = date.today().isoformat()
+    today_evs = requests.get(f"{BASE}/api/events/today?date={today}", headers=admin_headers).json()
+    check("管理者チームの本日イベントがある",
+          any(e["title"] == "管理者チーム ミーティング" and e["room_name"] == "デモ_管理者ルーム"
+              for e in today_evs), today_evs)
+    rooms = requests.get(f"{BASE}/api/rooms", headers=admin_headers).json()
+    check("管理者ルームが見える", any(rm["name"] == "デモ_管理者ルーム" for rm in rooms), rooms)
     r = requests.get(f"{BASE}/api/admin/report", headers=admin_headers)
     check("セッション履歴がレポートに反映される", r.json()["total_sessions"] >= 60, r.json()["total_sessions"])
     r = requests.post(f"{BASE}/api/login", json={"username": "デモ_さくら", "password": "demo1234"})
@@ -1440,9 +1451,13 @@ def test_demo_data(users, admin_headers):
     check("サブサイトに履歴が生成される", r.json()["total_sessions"] >= 20, r.json())
 
     # 削除
-    r = requests.delete(f"{BASE}/api/sysadmin/demo-data", headers=admin_headers)
+    r = requests.delete(f"{BASE}/api/dev/demo-data", headers=admin_headers)
     check("デモデータ削除", r.status_code == 200 and r.json()["users"] == 12
           and r.json()["subsite"] == "demo-corp", r.text)
+    # administratorのチーム所属・本日イベントも消える(デモ外ユーザーのRSVPも掃除)
+    after_teams = requests.get(f"{BASE}/api/teams", headers=admin_headers).json()
+    check("administratorのデモチーム所属が消える",
+          not any(t["name"] == "デモ_管理者チーム" for t in after_teams), after_teams)
     r = requests.get(f"{BASE}/api/admin/users", headers=admin_headers)
     check("デモユーザーが消える",
           not any(u["username"].startswith("デモ_") for u in r.json()), r.text)

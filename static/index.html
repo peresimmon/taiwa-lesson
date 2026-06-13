@@ -670,19 +670,6 @@
           </div>
         </div>
 
-        <!-- デモデータ(本番運用では削除する) -->
-        <div class="dash-grid">
-          <div class="panel">
-            <h3>デモデータ</h3>
-            <p class="note">デモ用のユーザー12名・チーム3つ・通話履歴・掲示板・イベント・ルームをメインサイトにまとめて生成します。
-              デモ用ユーザー（デモ_〜）のパスワードはすべて「demo1234」です。</p>
-            <div class="btn-row">
-              <button type="button" id="btn-demo-create" class="btn-small">デモデータを生成</button>
-              <button type="button" id="btn-demo-delete" class="btn-text danger">デモデータを削除</button>
-            </div>
-            <p id="demo-msg" class="note"></p>
-          </div>
-        </div>
       </div>
 
       <!-- ページ2: サイト作成 -->
@@ -752,7 +739,21 @@
         <h2>🛠 開発者モード（DBブラウザ）</h2>
         <button id="btn-dev-back" class="btn-secondary">ホームへ戻る</button>
       </div>
+      <!-- デモデータ(開発・動作確認用。本番運用では撤去する) -->
       <div class="panel panel-wide">
+        <h3>デモデータ</h3>
+        <p class="note">動作確認用のデータをメインサイトにまとめて生成します。デモユーザー12名・チーム
+          （<strong>administratorがリーダーのチーム</strong>を含む）・そのチームに紐づくルームと本日のイベント・
+          通話履歴・掲示板・デモ用サブサイトなど。デモユーザー（デモ_〜）のパスワードはすべて「demo1234」です。</p>
+        <div class="btn-row">
+          <button type="button" id="btn-demo-create" class="btn-small">デモデータを生成</button>
+          <button type="button" id="btn-demo-delete" class="btn-text danger">デモデータを削除</button>
+        </div>
+        <p id="demo-msg" class="note"></p>
+      </div>
+
+      <div class="panel panel-wide">
+        <h3>DBブラウザ</h3>
         <p class="note">各テーブルの中身を参照できます（<strong>読み取り専用・SELECTのみ</strong>。
           最大1000行まで。<code>password_hash</code> 等の機微な値はマスクされます）。
           テーブルを選ぶと、絞り込み・並び替えができるビューアが開きます。</p>
