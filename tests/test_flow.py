@@ -1468,7 +1468,21 @@ def test_announcement_ext(users, admin_headers):
     check("一般ユーザーは統計403",
           requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=h0).status_code == 403)
     stats = requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=admin_headers).json()
-    check("サイト管理者は送信対象・既読人数を取得", stats["recipients"] >= 1 and stats["read_count"] >= 1, stats)
+    check("サイト管理者は送信対象・既読・未読人数を取得",
+          stats["recipients"] >= 1 and stats["read_count"] >= 1
+          and stats["unread_count"] == stats["recipients"] - stats["read_count"], stats)
+
+    # 既読/未読ユーザー一覧(投稿権限者のみ)
+    check("一般ユーザーは一覧403",
+          requests.get(f"{BASE}/api/announcements/{aid}/readers", headers=h0).status_code == 403)
+    readers = requests.get(f"{BASE}/api/announcements/{aid}/readers", headers=admin_headers).json()
+    read_names = [u["name"] for u in readers["read"]]
+    check("既読一覧に既読ユーザーが入る",
+          users[0]["username"] in read_names
+          and len(readers["read"]) == stats["read_count"]
+          and len(readers["unread"]) == stats["unread_count"], readers)
+    check("既読一覧と未読一覧は重複しない",
+          not (set(u["user_id"] for u in readers["read"]) & set(u["user_id"] for u in readers["unread"])), readers)
 
     # サイト管理者はサイト全体お知らせの統計を見られる(can_view_stats=true)
     items_a = requests.get(f"{BASE}/api/announcements", headers=admin_headers).json()

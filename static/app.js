@@ -1943,12 +1943,33 @@ async function openAnnouncementDetail(idx) {
       renderAnnouncements(announcementItems);
     } catch { /* 既読化に失敗しても表示は続ける */ }
   }
-  // 投稿権限者には送信対象人数・既読人数を本文の上に表示
+  // 投稿権限者には送信対象人数・既読/未読人数を本文の上に表示(人数はクリックで一覧)
   if (a.can_view_stats) {
     try {
       const s = await api(`/api/announcements/${a.id}/stats`);
-      $("ann-stats").textContent = `👁 既読 ${s.read_count} / 送信対象 ${s.recipients} 人`;
+      $("ann-stats").innerHTML =
+        `👁 既読 <button class="stat-link" data-readers="read">${s.read_count}</button> 人` +
+        ` ・ 未読 <button class="stat-link" data-readers="unread">${s.unread_count}</button> 人` +
+        ` ・ 送信対象 ${s.recipients} 人`;
+      $("ann-stats").querySelectorAll("[data-readers]").forEach((btn) => {
+        btn.onclick = () => openReadersList(a, btn.dataset.readers);
+      });
     } catch { /* 取得できなくても本文は表示する */ }
+  }
+}
+
+/* 既読/未読のユーザー一覧を表示する(投稿権限者のみ) */
+async function openReadersList(a, status) {
+  try {
+    const r = await api(`/api/announcements/${a.id}/readers`);
+    const list = status === "read" ? r.read : r.unread;
+    const title = status === "read" ? "既読のユーザー" : "未読のユーザー";
+    const bodyHtml = list.length
+      ? `<ul class="readers-list">${list.map((u) => `<li>${escapeHtml(u.name)}</li>`).join("")}</ul>`
+      : `<p class="empty-note">${status === "read" ? "まだ既読の人はいません" : "全員が既読です"}</p>`;
+    openModal(`${title}（${list.length}人）`, bodyHtml, [{ label: "閉じる", primary: true, onClick: closeModal }]);
+  } catch (err) {
+    $("lobby-error").textContent = err.message;
   }
 }
 

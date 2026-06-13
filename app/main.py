@@ -1594,31 +1594,75 @@ def mark_announcement_read(
     return {"ok": True}
 
 
+def _announcement_or_stats_403(db: Session, user: User, ann_id: int) -> Announcement:
+    """お知らせ統計の閲覧権限チェック。サイト管理者、またはそのチーム限定お知らせのリーダーのみ"""
+    ann = db.get(Announcement, ann_id)
+    if ann is None or ann.site_id != user.site_id:
+        raise HTTPException(status_code=404, detail="お知らせが存在しません")
+    if not _is_site_admin(user):
+        if ann.team_id is None or ann.team_id not in _led_team_ids(db, user):
+            raise HTTPException(status_code=403, detail="この情報を見る権限がありません")
+    return ann
+
+
+def _announcement_recipient_ids(db: Session, ann: Announcement) -> set[int]:
+    """お知らせの送信対象ユーザーID。サイト全体=サイトの有効ユーザー / チーム限定=そのチームのメンバー"""
+    if ann.team_id is None:
+        return {
+            u.id for u in db.query(User).filter(
+                User.site_id == ann.site_id, User.is_active.is_(True)
+            )
+        }
+    return {
+        m.user_id for m in db.query(TeamMember).filter(TeamMember.team_id == ann.team_id)
+    }
+
+
 @app.get("/api/announcements/{ann_id}/stats")
 def announcement_stats(
     ann_id: int, user: User = Depends(active_user), db: Session = Depends(get_db)
 ):
-    """お知らせの送信対象人数・既読人数(投稿権限者のみ)"""
-    ann = db.get(Announcement, ann_id)
-    if ann is None or ann.site_id != user.site_id:
-        raise HTTPException(status_code=404, detail="お知らせが存在しません")
-    # 閲覧できるのはサイト管理者、またはそのチーム限定お知らせのリーダー
-    if not _is_site_admin(user):
-        if ann.team_id is None or ann.team_id not in _led_team_ids(db, user):
-            raise HTTPException(status_code=403, detail="この情報を見る権限がありません")
-    if ann.team_id is None:
-        # サイト全体: サイトの有効ユーザー全員が対象
-        recipients = (
-            db.query(User).filter(User.site_id == user.site_id, User.is_active.is_(True)).count()
+    """お知らせの送信対象人数・既読人数・未読人数(投稿権限者のみ)"""
+    ann = _announcement_or_stats_403(db, user, ann_id)
+    recips = _announcement_recipient_ids(db, ann)
+    read_uids = {
+        r.user_id for r in db.query(AnnouncementRead).filter(
+            AnnouncementRead.announcement_id == ann_id
         )
-    else:
-        recipients = (
-            db.query(TeamMember).filter(TeamMember.team_id == ann.team_id).count()
+    }
+    read_count = len(recips & read_uids)
+    return {
+        "recipients": len(recips),
+        "read_count": read_count,
+        "unread_count": len(recips) - read_count,
+    }
+
+
+@app.get("/api/announcements/{ann_id}/readers")
+def announcement_readers(
+    ann_id: int, user: User = Depends(active_user), db: Session = Depends(get_db)
+):
+    """お知らせの既読ユーザー一覧・未読ユーザー一覧(投稿権限者のみ)"""
+    ann = _announcement_or_stats_403(db, user, ann_id)
+    recips = _announcement_recipient_ids(db, ann)
+    read_uids = {
+        r.user_id for r in db.query(AnnouncementRead).filter(
+            AnnouncementRead.announcement_id == ann_id
         )
-    read_count = (
-        db.query(AnnouncementRead).filter(AnnouncementRead.announcement_id == ann_id).count()
+    }
+    names = {
+        u.id: (u.display_name or u.username)
+        for u in db.query(User).filter(User.id.in_(recips))
+    } if recips else {}
+    read = sorted(
+        ({"user_id": uid, "name": names.get(uid, "?")} for uid in recips if uid in read_uids),
+        key=lambda x: x["name"],
     )
-    return {"recipients": recipients, "read_count": read_count}
+    unread = sorted(
+        ({"user_id": uid, "name": names.get(uid, "?")} for uid in recips if uid not in read_uids),
+        key=lambda x: x["name"],
+    )
+    return {"read": read, "unread": unread}
 
 
 def _event_payloads(db: Session, user: User, rows: list) -> list[dict]:

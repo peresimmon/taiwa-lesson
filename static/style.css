@@ -460,7 +460,24 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 0.66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-right: 6px;
 }
 /* お知らせ詳細モーダル */
-.ann-detail-box { max-width: 620px; }
+/* 本文の分量にかかわらず表示位置を固定する(上揃え)。これで「次へ」ボタンの位置が
+   お知らせを切り替えてもずれない。長い本文は本文部分だけスクロールさせる */
+#ann-detail-overlay { align-items: flex-start; }
+.ann-detail-box {
+  max-width: 620px; margin-top: 72px;
+  max-height: calc(100vh - 120px);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.ann-detail-box .ann-detail-body { overflow-y: auto; }
+/* 既読/未読の人数リンク */
+.stat-link {
+  background: none; border: none; padding: 0 2px; cursor: pointer; font: inherit;
+  color: var(--primary-dark); font-weight: 700; text-decoration: underline; text-underline-offset: 2px;
+}
+.stat-link:hover { color: var(--accent); }
+.readers-list { list-style: none; max-height: 320px; overflow-y: auto; }
+.readers-list li { padding: 7px 4px; border-bottom: 1px dashed var(--border); font-size: 0.92rem; }
+.readers-list li:last-child { border-bottom: none; }
 /* 上部: タイトル(左) + 前へ/次へ/閉じるのアイコン(右上) */
 .ann-detail-top { display: flex; align-items: flex-start; gap: 12px; }
 .ann-detail-top h3 { flex: 1; margin: 0; color: var(--primary); word-break: break-word; }
