@@ -1454,8 +1454,15 @@ def test_announcement_ext(users, admin_headers):
     items = requests.get(f"{BASE}/api/announcements", headers=h0).json()
     a = next(x for x in items if x["title"] == title)
     check("未読は is_read=false", a["is_read"] is False, a)
-    check("一般→投稿権限なしは can_view_stats=false", a["can_view_stats"] is False, a)
     aid = a["id"]
+
+    # 投稿権限のない一般ユーザー(モデレータでない別アカウント)を用意して負例を確認する
+    # ※h0 はルーム作成のためモデレータに昇格済みで、モデレータは統計を閲覧できる
+    vtok = requests.post(f"{BASE}/api/register",
+                         json={"username": f"viewer_{sfx}", "password": "pass123"}).json()["token"]
+    hv = {"Authorization": f"Bearer {vtok}"}
+    av = next(x for x in requests.get(f"{BASE}/api/announcements", headers=hv).json() if x["id"] == aid)
+    check("一般→投稿権限なしは can_view_stats=false", av["can_view_stats"] is False, av)
 
     # 既読化
     r = requests.post(f"{BASE}/api/announcements/{aid}/read", headers=h0)
@@ -1466,7 +1473,7 @@ def test_announcement_ext(users, admin_headers):
 
     # 統計: 投稿権限のないユーザーは403、サイト管理者は人数取得可
     check("一般ユーザーは統計403",
-          requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=h0).status_code == 403)
+          requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=hv).status_code == 403)
     stats = requests.get(f"{BASE}/api/announcements/{aid}/stats", headers=admin_headers).json()
     check("サイト管理者は送信対象・既読・未読人数を取得",
           stats["recipients"] >= 1 and stats["read_count"] >= 1
@@ -1474,7 +1481,7 @@ def test_announcement_ext(users, admin_headers):
 
     # 既読/未読ユーザー一覧(投稿権限者のみ)
     check("一般ユーザーは一覧403",
-          requests.get(f"{BASE}/api/announcements/{aid}/readers", headers=h0).status_code == 403)
+          requests.get(f"{BASE}/api/announcements/{aid}/readers", headers=hv).status_code == 403)
     readers = requests.get(f"{BASE}/api/announcements/{aid}/readers", headers=admin_headers).json()
     read_names = [u["name"] for u in readers["read"]]
     check("既読一覧に既読ユーザーが入る",
@@ -1649,6 +1656,88 @@ def test_demo_data(users, admin_headers):
           not any(s["slug"] == "demo-corp" for s in r.json()), r.text)
 
 
+def test_moderator_admin(users, admin_headers):
+    print("[27] モデレータの管理画面(設定・レポート/ログ・チーム・お知らせ)")
+    sfx = secrets.token_hex(3)
+    # モデレータを用意(登録 → 昇格 → ログイン)
+    reg = requests.post(f"{BASE}/api/register", json={"username": f"mod_{sfx}", "password": "pass123"})
+    check("モデレータ候補を登録", reg.status_code == 201, reg.text)
+    mh = {"Authorization": f"Bearer {reg.json()['token']}"}
+    uid = requests.get(f"{BASE}/api/me", headers=mh).json()["id"]
+    r = requests.put(f"{BASE}/api/admin/users/{uid}/role", headers=admin_headers, json={"role": "moderator"})
+    check("モデレータに昇格", r.status_code == 200, r.text)
+    tok = requests.post(f"{BASE}/api/login", json={"username": f"mod_{sfx}", "password": "pass123"}).json()
+    check("ログイン応答のロールがmoderator", tok.get("role") == "moderator", tok)
+    mh = {"Authorization": f"Bearer {tok['token']}"}
+
+    # --- サイト設定: サイト全体以外は変更可、サイト全体の設定は据え置き ---
+    s = requests.get(f"{BASE}/api/admin/settings", headers=mh)
+    check("モデレータは設定を取得できる", s.status_code == 200, s.text)
+    cur = s.json()
+    payload = dict(cur)
+    payload["session_minutes"] = 7  # 「通話の設定」(変更可)
+    payload["site_name"] = "改ざんされた名前"        # サイト全体(無視されるべき)
+    payload["tagline"] = "改ざんされたコピー"          # サイト全体(無視)
+    payload["allow_registration"] = not cur["allow_registration"]  # サイト全体(無視)
+    payload["rooms_enabled"] = not cur["rooms_enabled"]            # サイト全体(無視)
+    r = requests.put(f"{BASE}/api/admin/settings", headers=mh, json=payload)
+    check("モデレータが設定を保存できる", r.status_code == 200, r.text)
+    after = requests.get(f"{BASE}/api/admin/settings", headers=admin_headers).json()
+    check("サイト全体以外(セッション時間)は反映される", after["session_minutes"] == 7, after)
+    check("サイト名は変更されない", after["site_name"] == cur["site_name"], after)
+    check("キャッチコピーは変更されない", after["tagline"] == cur["tagline"], after)
+    check("新規登録設定は変更されない", after["allow_registration"] == cur["allow_registration"], after)
+    check("ルーム機能設定は変更されない", after["rooms_enabled"] == cur["rooms_enabled"], after)
+    requests.put(f"{BASE}/api/admin/settings", headers=admin_headers, json=dict(cur))  # 元に戻す
+
+    # --- レポート・ログ(スコープなし) ---
+    rep = requests.get(f"{BASE}/api/admin/report", headers=mh)
+    check("モデレータはレポートを取得(scoped=false)",
+          rep.status_code == 200 and rep.json()["scoped"] is False, rep.text)
+    check("モデレータは監査ログを取得",
+          requests.get(f"{BASE}/api/admin/audit", headers=mh).status_code == 200)
+    check("モデレータはレポートCSVを取得",
+          requests.get(f"{BASE}/api/admin/report/export", headers=mh).status_code == 200)
+
+    # --- チーム(作成・全件閲覧・メンバー追加・削除) ---
+    r = requests.post(f"{BASE}/api/admin/teams", headers=mh,
+                      json={"name": f"modteam_{sfx}", "description": "x"})
+    check("モデレータがチーム作成", r.status_code == 201, r.text)
+    tid = r.json()["id"]
+    check("モデレータは全チームが見える(スコープなし)",
+          any(t["id"] == tid for t in requests.get(f"{BASE}/api/admin/teams", headers=mh).json()))
+    r = requests.post(f"{BASE}/api/teams/{tid}/members", headers=mh,
+                      json={"username": users[0]["username"], "is_leader": True})
+    check("モデレータがメンバーをリーダー指定で追加", r.status_code == 201, r.text)
+
+    # --- お知らせ(サイト全体・任意チーム・統計・削除) ---
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=mh,
+                      json={"title": f"modann_{sfx}", "body": "全体お知らせ"})
+    check("モデレータがサイト全体お知らせを投稿", r.status_code == 201, r.text)
+    ann_id = r.json()["id"]
+    r = requests.post(f"{BASE}/api/admin/announcements", headers=mh,
+                      json={"title": f"modteamann_{sfx}", "body": "チーム連絡", "team_id": tid})
+    check("モデレータが任意チームにお知らせを投稿", r.status_code == 201, r.text)
+    items = requests.get(f"{BASE}/api/announcements", headers=mh).json()
+    a = next((x for x in items if x["id"] == ann_id), None)
+    check("モデレータは can_view_stats=true", a is not None and a["can_view_stats"] is True, a)
+    check("モデレータは統計APIを取得",
+          requests.get(f"{BASE}/api/announcements/{ann_id}/stats", headers=mh).status_code == 200)
+    check("モデレータがお知らせを削除",
+          requests.delete(f"{BASE}/api/admin/announcements/{ann_id}", headers=mh).status_code == 200)
+    check("モデレータがチームを削除",
+          requests.delete(f"{BASE}/api/admin/teams/{tid}", headers=mh).status_code == 200)
+
+    # --- ユーザー管理・サイト全体設定は不可(サイト管理者専用) ---
+    r = requests.post(f"{BASE}/api/admin/users", headers=mh,
+                      json={"username": f"x_{sfx}", "password": "pass1234"})
+    check("モデレータはユーザー作成不可", r.status_code == 403, r.text)
+    r = requests.put(f"{BASE}/api/admin/users/{uid}/role", headers=mh, json={"role": "user"})
+    check("モデレータはロール変更不可", r.status_code == 403, r.text)
+    check("モデレータはユーザー削除不可",
+          requests.delete(f"{BASE}/api/admin/users/{uid}", headers=mh).status_code == 403)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -1674,6 +1763,7 @@ async def main():
     test_user_theme(admin_headers)
     test_leader_admin(users, admin_headers)
     test_announcement_ext(users, admin_headers)
+    test_moderator_admin(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

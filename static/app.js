@@ -190,8 +190,9 @@ function setLoggedIn(newToken, newUsername, newRole, mustChangePassword, newDisp
   }
   updateHeaderName();
   $("user-info").classList.remove("hidden");
-  // 管理画面はサイト管理者またはチームリーダーに表示(リーダーは管理対象のみのスコープ)
-  $("btn-admin").classList.toggle("hidden", !(isSiteAdminRole() || isTeamLeader));
+  // 管理画面はサイト管理者・モデレータ・チームリーダーに表示
+  // (モデレータはユーザー管理と「サイト全体の設定」以外を操作可、リーダーは管理対象のみ)
+  $("btn-admin").classList.toggle("hidden", !(isSiteAdminRole() || userRole === "moderator" || isTeamLeader));
   $("btn-sysadmin").classList.toggle("hidden", userRole !== "system_admin");
   // 開発者モードはシステム管理者かつメインサイトのときだけ
   $("btn-dev").classList.toggle("hidden", !(userRole === "system_admin" && isMainSite));
@@ -2845,11 +2846,17 @@ let adminLeaderOnly = false;
 
 async function showAdmin() {
   $("admin-error").textContent = "";
-  // サイト管理者でないチームリーダーは「管理対象のみ」の絞り込みモードで開く
-  adminLeaderOnly = isTeamLeader && !isSiteAdminRole();
+  const siteAdmin = isSiteAdminRole();
+  const moderator = userRole === "moderator";
+  // サイト管理者でもモデレータでもないチームリーダーは「管理対象のみ」の絞り込みモード
+  adminLeaderOnly = isTeamLeader && !siteAdmin && !moderator;
+  // モデレータは「ユーザー管理」と「サイト全体の設定」だけ使えない(他はサイト管理者と同等)
+  const moderatorOnly = moderator && !siteAdmin;
   $("screen-admin").classList.toggle("leader-only", adminLeaderOnly);
+  $("screen-admin").classList.toggle("moderator-only", moderatorOnly);
   showScreen("admin");
-  showAdminPage("users");
+  // モデレータは「ユーザー」タブが非表示なので「サイト設定」から開く
+  showAdminPage(moderatorOnly ? "settings" : "users");
   try {
     // チーム一覧を先に読む(お知らせの範囲セレクト・削除可否の判定に使うため)
     await loadAdminTeams();
@@ -2859,7 +2866,7 @@ async function showAdmin() {
       loadAdminReport(),
       loadAdminReports(),
     ];
-    // サイト設定・監査ログはサイト管理者のみ(リーダーはAPIが403になるため呼ばない)
+    // サイト設定・監査ログはモデレータ以上(純粋なリーダーはAPIが403になるため呼ばない)
     if (!adminLeaderOnly) tasks.push(loadAdminSettings(), loadAdminAudit());
     await Promise.all(tasks);
   } catch (err) {

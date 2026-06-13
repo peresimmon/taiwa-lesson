@@ -620,6 +620,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #screen-admin.leader-only #btn-export-csv,
 #screen-admin.leader-only #admin-team-form { display: none !important; }
 
+/* モデレータが管理画面を開いたとき、サイト管理者専用の要素を隠す
+   (ユーザー管理タブと「サイト全体の設定」パネル) */
+#screen-admin.moderator-only .admin-tab[data-page="users"],
+#screen-admin.moderator-only #admin-page-users,
+#screen-admin.moderator-only #settings-panel-sitewide { display: none !important; }
+
 /* 横幅いっぱいのパネル(ユーザー一覧・通報など) */
 .panel-wide { margin-bottom: 20px; }
 .settings-save {

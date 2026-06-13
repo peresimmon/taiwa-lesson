@@ -564,11 +564,21 @@ def dev_user(user: User = Depends(active_user), db: Session = Depends(get_db)) -
 def admin_or_leader_user(
     user: User = Depends(active_user), db: Session = Depends(get_db)
 ) -> User:
-    """管理画面の権限。サイト管理者、またはいずれかのチームのリーダー。
-    リーダーの場合、各APIは自分の管理対象(率いるチームとそのメンバー)にスコープされる"""
-    if _is_site_admin(user) or _is_team_leader(db, user):
+    """管理画面の権限。サイト管理者・モデレータ、またはいずれかのチームのリーダー。
+    モデレータ以上はサイト全体を対象に操作でき(スコープなし)、リーダーの場合は各APIが
+    自分の管理対象(率いるチームとそのメンバー)にスコープされる"""
+    if _is_moderator(user) or _is_team_leader(db, user):
         return user
     raise HTTPException(status_code=403, detail="管理権限が必要です")
+
+
+def mod_admin_user(user: User = Depends(active_user)) -> User:
+    """モデレータ以上(モデレータ・サイト管理者・システム管理者)。サイト全体の管理操作
+    (サイト全体以外の設定・レポート/ログ・チーム・お知らせ)に使う。
+    ユーザー管理と「サイト全体の設定」はサイト管理者専用(site_admin_user)のまま"""
+    if not _is_moderator(user):
+        raise HTTPException(status_code=403, detail="モデレータ以上の権限が必要です")
+    return user
 
 
 def get_main_site(db: Session) -> Site:
@@ -880,7 +890,7 @@ def list_reports(
 def update_report(
     report_id: int,
     body: ReportStatusIn,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(mod_admin_user),
     db: Session = Depends(get_db),
 ):
     report = db.get(Report, report_id)
@@ -1017,17 +1027,18 @@ def _is_site_admin(user: User) -> bool:
 
 
 def _require_team_member(db: Session, user: User, team_id: int) -> Team:
-    """チームのメンバー(またはサイト管理者)であることを要求する"""
+    """チームのメンバー(またはモデレータ以上)であることを要求する"""
     team = _team_or_404(db, user, team_id)
-    if not _is_site_admin(user) and _membership(db, team_id, user.id) is None:
+    if not _is_moderator(user) and _membership(db, team_id, user.id) is None:
         raise HTTPException(status_code=403, detail="このチームのメンバーではありません")
     return team
 
 
 def _require_team_leader(db: Session, user: User, team_id: int) -> Team:
-    """チームリーダー(またはサイト管理者)であることを要求する"""
+    """チームリーダー(またはモデレータ以上)であることを要求する。
+    モデレータ・サイト管理者はサイト内のどのチームも管理できる"""
     team = _team_or_404(db, user, team_id)
-    if not _is_site_admin(user):
+    if not _is_moderator(user):
         m = _membership(db, team_id, user.id)
         if m is None or not m.is_leader:
             raise HTTPException(status_code=403, detail="チームリーダー権限が必要です")
@@ -1115,7 +1126,7 @@ def team_detail(
         "id": team.id,
         "name": team.name,
         "description": team.description,
-        "is_leader": bool(my_membership and my_membership.is_leader) or _is_site_admin(user),
+        "is_leader": bool(my_membership and my_membership.is_leader) or _is_moderator(user),
         "my_user_id": user.id,
         "members": [
             {
@@ -1157,7 +1168,7 @@ def team_set_leader(
     """リーダーの任命/解除。リーダーは他メンバーを共同リーダーにできる(複数人可)。
     自分自身のリーダー権限はサイト管理者のみ変更できる"""
     _require_team_leader(db, user, team_id)
-    if user_id == user.id and not _is_site_admin(user):
+    if user_id == user.id and not _is_moderator(user):
         raise HTTPException(status_code=400, detail="自分のリーダー権限は変更できません")
     m = _membership(db, team_id, user_id)
     if m is None:
@@ -1186,7 +1197,7 @@ def team_add_member(
         raise HTTPException(status_code=404, detail="ユーザーが存在しません")
     if _membership(db, team_id, target.id):
         raise HTTPException(status_code=409, detail="既にチームのメンバーです")
-    is_leader = body.is_leader if _is_site_admin(user) else False
+    is_leader = body.is_leader if _is_moderator(user) else False
     db.add(TeamMember(team_id=team_id, user_id=target.id, is_leader=is_leader))
     audit(db, user, "team_member_add", f"{target.username}")
     db.commit()
@@ -1228,8 +1239,8 @@ def team_remove_member(
     m = _membership(db, team_id, user_id)
     if m is None:
         raise HTTPException(status_code=404, detail="チームのメンバーではありません")
-    if m.is_leader and not _is_site_admin(user):
-        raise HTTPException(status_code=403, detail="リーダーの削除はサイト管理者のみ可能です")
+    if m.is_leader and not _is_moderator(user):
+        raise HTTPException(status_code=403, detail="リーダーの削除はモデレータ以上のみ可能です")
     db.delete(m)
     db.commit()
     return {"ok": True}
@@ -1558,7 +1569,7 @@ def announcements(user: User = Depends(active_user), db: Session = Depends(get_d
         )
     } if ann_ids else set()
     led_ids = _led_team_ids(db, user)
-    site_admin = _is_site_admin(user)
+    can_view_all = _is_moderator(user)
     return [
         {
             "id": a.id,
@@ -1567,8 +1578,8 @@ def announcements(user: User = Depends(active_user), db: Session = Depends(get_d
             "team_id": a.team_id,
             "team_name": team_names.get(a.team_id),
             "is_read": a.id in read_ids,
-            # 送信対象人数・既読人数を見られるのは投稿権限者(サイト管理者 / そのチームのリーダー)
-            "can_view_stats": site_admin or (a.team_id is not None and a.team_id in led_ids),
+            # 送信対象人数・既読人数を見られるのは投稿権限者(モデレータ以上 / そのチームのリーダー)
+            "can_view_stats": can_view_all or (a.team_id is not None and a.team_id in led_ids),
             "created_at": a.created_at.isoformat(),
         }
         for a in rows
@@ -1595,11 +1606,11 @@ def mark_announcement_read(
 
 
 def _announcement_or_stats_403(db: Session, user: User, ann_id: int) -> Announcement:
-    """お知らせ統計の閲覧権限チェック。サイト管理者、またはそのチーム限定お知らせのリーダーのみ"""
+    """お知らせ統計の閲覧権限チェック。モデレータ以上、またはそのチーム限定お知らせのリーダーのみ"""
     ann = db.get(Announcement, ann_id)
     if ann is None or ann.site_id != user.site_id:
         raise HTTPException(status_code=404, detail="お知らせが存在しません")
-    if not _is_site_admin(user):
+    if not _is_moderator(user):
         if ann.team_id is None or ann.team_id not in _led_team_ids(db, user):
             raise HTTPException(status_code=403, detail="この情報を見る権限がありません")
     return ann
@@ -2085,9 +2096,9 @@ def _user_rows(db: Session, site_id: int) -> list[dict]:
 
 @app.get("/api/admin/users")
 def admin_list_users(admin: User = Depends(admin_or_leader_user), db: Session = Depends(get_db)):
-    """ユーザー一覧。サイト管理者は自サイト全員、チームリーダーは管理対象(率いるチームのメンバー)のみ"""
+    """ユーザー一覧。モデレータ以上は自サイト全員、チームリーダーは管理対象(率いるチームのメンバー)のみ"""
     rows = _user_rows(db, admin.site_id)
-    if _is_site_admin(admin):
+    if _is_moderator(admin):
         return rows
     managed = _led_team_member_ids(db, admin)
     return [r for r in rows if r["id"] in managed]
@@ -2189,9 +2200,9 @@ def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depe
     from sqlalchemy import func
 
     sid = admin.site_id
-    site_admin = _is_site_admin(admin)
-    scope_ids = None if site_admin else _led_team_member_ids(db, admin)
-    scope_team_ids = None if site_admin else _led_team_ids(db, admin)
+    full_scope = _is_moderator(admin)  # モデレータ以上はサイト全体、リーダーは管理対象のみ
+    scope_ids = None if full_scope else _led_team_member_ids(db, admin)
+    scope_team_ids = None if full_scope else _led_team_ids(db, admin)
 
     def survey_q():
         q = db.query(Survey).join(User, Survey.user_id == User.id).filter(User.site_id == sid)
@@ -2238,13 +2249,13 @@ def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depe
         "avg_rating": round(avg_rating, 2) if avg_rating is not None else None,
         "daily": daily,
         "teams": teams,
-        "scoped": not site_admin,  # リーダーは管理対象のみのレポート
+        "scoped": not full_scope,  # リーダーは管理対象のみのレポート
     }
 
 
 @app.get("/api/admin/report/export")
 def admin_report_export(
-    admin: User = Depends(site_admin_user), db: Session = Depends(get_db)
+    admin: User = Depends(mod_admin_user), db: Session = Depends(get_db)
 ):
     """セッション(アンケート)データのCSVエクスポート"""
     from fastapi.responses import Response
@@ -2286,7 +2297,7 @@ def admin_report_export(
 
 
 @app.get("/api/admin/audit")
-def admin_audit_log(admin: User = Depends(site_admin_user), db: Session = Depends(get_db)):
+def admin_audit_log(admin: User = Depends(mod_admin_user), db: Session = Depends(get_db)):
     """監査ログ(直近100件)"""
     rows = (
         db.query(AuditLog)
@@ -2526,12 +2537,18 @@ def _settings_payload(db: Session, site_id: int) -> dict:
 
 
 @app.get("/api/admin/settings")
-def admin_get_settings(admin: User = Depends(site_admin_user), db: Session = Depends(get_db)):
+def admin_get_settings(admin: User = Depends(mod_admin_user), db: Session = Depends(get_db)):
     return _settings_payload(db, admin.site_id)
 
 
-def _apply_settings(db: Session, sid: int, body: SettingsIn) -> None:
-    """サイト設定の保存処理(管理画面・システム管理画面で共用)。commitは呼び出し側"""
+# 「サイト全体の設定」パネルの項目。モデレータはこれらを変更できない(サイト管理者専用)
+SITE_WIDE_SETTING_KEYS = {"allow_registration", "rooms_enabled"}
+
+
+def _apply_settings(db: Session, sid: int, body: SettingsIn, allow_site_wide: bool = True) -> None:
+    """サイト設定の保存処理(管理画面・システム管理画面で共用)。commitは呼び出し側。
+    allow_site_wide=False のときは「サイト全体の設定」(サイト名・キャッチコピー・新規登録・
+    ルーム機能)を変更せず据え置く(モデレータ用)"""
     if not (body.mode_toon or body.mode_real or body.mode_still or body.mode_camera):
         raise HTTPException(status_code=422, detail="表示モードは少なくとも1つ有効にしてください")
     set_setting(db, sid, "session_minutes", str(body.session_minutes))
@@ -2541,27 +2558,31 @@ def _apply_settings(db: Session, sid: int, body: SettingsIn) -> None:
         "feature_mute", "feature_camera_toggle", "feature_screenshare", "feature_chat",
         "role_swap_enabled", "rematch_priority",
     ):
+        if not allow_site_wide and key in SITE_WIDE_SETTING_KEYS:
+            continue
         set_setting(db, sid, key, "true" if getattr(body, key) else "false")
     set_setting(db, sid, "survey_question",
                 body.survey_question.strip() or DEFAULT_SETTINGS["survey_question"])
-    set_setting(db, sid, "tagline", body.tagline.strip() or DEFAULT_SETTINGS["tagline"])
     set_setting(db, sid, "lobby_topic_mode", body.lobby_topic_mode)
     set_setting(db, sid, "lobby_topic_text", body.lobby_topic_text.strip())
     set_setting(db, sid, "topic_pool", body.topic_pool.strip())
     set_setting(db, sid, "survey_questions", body.survey_questions.strip())
-    if body.site_name.strip():
-        site = db.get(Site, sid)
-        if site:
-            site.name = body.site_name.strip()
+    if allow_site_wide:
+        set_setting(db, sid, "tagline", body.tagline.strip() or DEFAULT_SETTINGS["tagline"])
+        if body.site_name.strip():
+            site = db.get(Site, sid)
+            if site:
+                site.name = body.site_name.strip()
 
 
 @app.put("/api/admin/settings")
 def admin_put_settings(
     body: SettingsIn,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(mod_admin_user),
     db: Session = Depends(get_db),
 ):
-    _apply_settings(db, admin.site_id, body)
+    # モデレータは「サイト全体の設定」以外のみ変更できる(サイト全体はサイト管理者専用)
+    _apply_settings(db, admin.site_id, body, allow_site_wide=_is_site_admin(admin))
     audit(db, admin, "settings_update", "サイト設定を変更")
     db.commit()
     return {"ok": True}
@@ -2574,17 +2595,18 @@ def admin_create_announcement(
     db: Session = Depends(get_db),
 ):
     """お知らせを投稿する。team_id指定=チーム限定 / 未指定=サイト全体。
-    チームリーダーは自分が率いるチーム限定のみ投稿できる(サイト全体はサイト管理者のみ)"""
+    モデレータ以上はサイト全体・任意のチームに投稿でき、チームリーダーは自分が率いる
+    チーム限定のみ投稿できる(サイト全体はモデレータ以上のみ)"""
     if body.team_id:
         team = db.get(Team, body.team_id)
         if team is None or team.site_id != admin.site_id:
             raise HTTPException(status_code=404, detail="チームが存在しません")
-        if not _is_site_admin(admin) and body.team_id not in _led_team_ids(db, admin):
+        if not _is_moderator(admin) and body.team_id not in _led_team_ids(db, admin):
             raise HTTPException(status_code=403, detail="このチームのリーダーではありません")
     else:
-        # サイト全体への投稿はサイト管理者のみ
-        if not _is_site_admin(admin):
-            raise HTTPException(status_code=403, detail="サイト全体のお知らせはサイト管理者のみ投稿できます")
+        # サイト全体への投稿はモデレータ以上のみ
+        if not _is_moderator(admin):
+            raise HTTPException(status_code=403, detail="サイト全体のお知らせはモデレータ以上のみ投稿できます")
     ann = Announcement(site_id=admin.site_id, title=body.title, body=body.body, team_id=body.team_id)
     db.add(ann)
     audit(db, admin, "announcement_create", body.title)
@@ -2601,8 +2623,8 @@ def admin_delete_announcement(
     ann = db.get(Announcement, ann_id)
     if ann is None or ann.site_id != admin.site_id:
         raise HTTPException(status_code=404, detail="お知らせが存在しません")
-    # リーダーは自分が率いるチーム限定のお知らせのみ削除できる
-    if not _is_site_admin(admin):
+    # モデレータ以上は全お知らせを、リーダーは自分が率いるチーム限定のお知らせのみ削除できる
+    if not _is_moderator(admin):
         if ann.team_id is None or ann.team_id not in _led_team_ids(db, admin):
             raise HTTPException(status_code=403, detail="このお知らせを削除する権限がありません")
     db.query(AnnouncementRead).filter(
@@ -2634,7 +2656,7 @@ def admin_list_teams(admin: User = Depends(admin_or_leader_user), db: Session = 
     ):
         leaders.setdefault(m.team_id, []).append(dn or name)
     q = db.query(Team).filter(Team.site_id == admin.site_id)
-    if not _is_site_admin(admin):
+    if not _is_moderator(admin):
         q = q.filter(Team.id.in_(_led_team_ids(db, admin) or {-1}))
     rows = q.order_by(Team.id).all()
     return [
@@ -2651,7 +2673,7 @@ def admin_list_teams(admin: User = Depends(admin_or_leader_user), db: Session = 
 @app.post("/api/admin/teams", status_code=201)
 def admin_create_team(
     body: TeamIn,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(mod_admin_user),
     db: Session = Depends(get_db),
 ):
     team = Team(site_id=admin.site_id, name=body.name, description=body.description.strip())
@@ -2664,7 +2686,7 @@ def admin_create_team(
 @app.delete("/api/admin/teams/{team_id}")
 def admin_delete_team(
     team_id: int,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(mod_admin_user),
     db: Session = Depends(get_db),
 ):
     """チームと所属情報・チーム限定の投稿/予定を削除する"""
@@ -2688,10 +2710,10 @@ def admin_set_team_leader(
     team_id: int,
     user_id: int,
     body: LeaderIn,
-    admin: User = Depends(site_admin_user),
+    admin: User = Depends(mod_admin_user),
     db: Session = Depends(get_db),
 ):
-    """チームリーダーの設定/解除(サイト管理者のみ)"""
+    """チームリーダーの設定/解除(モデレータ以上)"""
     _team_or_404(db, admin, team_id)
     m = _membership(db, team_id, user_id)
     if m is None:
