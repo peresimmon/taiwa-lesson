@@ -7,11 +7,15 @@
 - [ ] **TURNサーバーの導入** — 現在はGoogle STUNのみ。企業ネットワークやモバイル回線同士では
       P2P接続に失敗するため、本番では必須。候補: Metered.ca(無料枠あり) / Twilio TURN / 自前coturn。
       `static/app.js` の `RTC_CONFIG.iceServers` に追加するだけで適用できる
-- [ ] **データベースの永続化** — Cloud RunのSQLiteは再デプロイで消える。
+- [ ] **データベースの永続化** — Cloud RunのSQLiteは再デプロイ/インスタンスごとに消える。
       Cloud SQL(PostgreSQL)へ移行する。`DATABASE_URL` 環境変数対応は実装済みのため、
-      Cloud Run側で `DATABASE_URL=postgresql://...` を設定し `psycopg2-binary` を requirements に追加する
-- [ ] **SECRET_KEYの設定** — JWT署名キーが既定値のまま。Cloud Runの環境変数に
-      32バイト以上の乱数(`python -c "import secrets; print(secrets.token_urlsafe(48))"`)を設定する
+      Cloud Run側で `DATABASE_URL=postgresql://...` を設定し `psycopg2-binary` を requirements に追加する。
+      ※永続化しないと連番IDが振り直される。現在は `token_version`(ユーザー行ごとの乱数)で
+      「IDだけ一致する別人のトークン」を弾いているため*別人として勝手にログインする事故は防げている*が、
+      正規ユーザーも再デプロイのたびにログアウトされる。恒久対応にはDB永続化が必要
+- [ ] **SECRET_KEYの設定** — JWT署名キーが既定値(`dev-secret-change-me`)のまま。Cloud Runの環境変数に
+      32バイト以上の乱数(`python -c "import secrets; print(secrets.token_urlsafe(48))"`)を設定する。
+      設定後はインスタンス間で署名キーが共有され、トークンの整合が取れる
 
 ## セキュリティ
 

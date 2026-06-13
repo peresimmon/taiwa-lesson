@@ -1,5 +1,6 @@
 """データベース定義(デモはSQLite。本番は DATABASE_URL 環境変数でPostgreSQL等に差し替え可能)"""
 import os
+import secrets
 from datetime import datetime, timezone
 
 from sqlalchemy import (
@@ -60,6 +61,11 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # False=無効化(ログイン不可)
     # 初期パスワードのアカウントは初回ログイン時に変更を強制する
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    # トークン世代。発行済みトークンの本人性確認に使う(行ごとに乱数)。
+    # DBが作り直されてIDが振り直されても、別人のトークンを一致させない安全装置
+    token_version: Mapped[str] = mapped_column(
+        String(32), default=lambda: secrets.token_hex(8)
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -331,6 +337,13 @@ def _migrate() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
         if user_cols and "display_name" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR(50)"))
+        if user_cols and "token_version" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN token_version VARCHAR(32)"))
+            # 既存ユーザーには行ごとに別々の乱数を入れる(randomblobは行ごとに評価される)
+            conn.execute(text(
+                "UPDATE users SET token_version = lower(hex(randomblob(8)))"
+                " WHERE token_version IS NULL"
+            ))
         if user_cols and "is_active" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1"))
         sv_cols = cols(conn, "surveys")

@@ -1282,6 +1282,32 @@ def test_recurring_events(users, admin_headers):
         requests.delete(f"{BASE}/api/events/{m_ev['id']}?scope=series", headers=h0)
 
 
+def test_token_binding(users):
+    print("[21] トークンの本人性バインド + APIキャッシュ抑止")
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from app.auth import create_token
+
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    r = requests.get(f"{BASE}/api/me", headers=h0)
+    check("正規トークンは有効", r.status_code == 200, r.text)
+    # ユーザー固有の応答は共有キャッシュに残さない
+    check("APIにno-storeが付く", "no-store" in r.headers.get("Cache-Control", ""),
+          r.headers.get("Cache-Control"))
+    check("Vary: Authorization が付く",
+          "authorization" in r.headers.get("Vary", "").lower(), r.headers.get("Vary"))
+    uid = r.json()["id"]
+
+    # token_versionが違うトークン(IDだけ一致する別人のトークンを模擬)は401
+    forged = create_token(uid, "deadbeefdeadbeef")
+    r = requests.get(f"{BASE}/api/me", headers={"Authorization": f"Bearer {forged}"})
+    check("token_version不一致は401(勝手ログイン防止)", r.status_code == 401, r.text)
+    # 旧形式(token_versionなし=空)も弾く
+    empty = create_token(uid, "")
+    r = requests.get(f"{BASE}/api/me", headers={"Authorization": f"Bearer {empty}"})
+    check("token_version空(旧トークン)は401", r.status_code == 401, r.text)
+
+
 def test_dev_mode(users, admin_headers):
     print("[20] 開発者モード(DBブラウザ)")
     h0 = {"Authorization": f"Bearer {users[0]['token']}"}
@@ -1415,6 +1441,7 @@ async def main():
     await test_events_attendance(users, admin_headers)
     test_recurring_events(users, admin_headers)
     test_dev_mode(users, admin_headers)
+    test_token_binding(users)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

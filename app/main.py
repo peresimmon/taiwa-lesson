@@ -80,7 +80,12 @@ async def cache_control(request, call_next):
     (ETagにより未変更なら304で済むため通信量はほぼ増えない)"""
     response = await call_next(request)
     path = request.url.path
-    if path in ("/", f"/{MAIN_SITE_SLUG}", "/login", "/manifest.json") or path.endswith(
+    if path.startswith("/api/"):
+        # 認証済みの応答(ユーザー固有データ)を共有キャッシュに残さない。
+        # Authorizationごとに別応答であることも明示する
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["Vary"] = "Authorization"
+    elif path in ("/", f"/{MAIN_SITE_SLUG}", "/login", "/manifest.json") or path.endswith(
         (".html", ".js", ".css")
     ):
         response.headers["Cache-Control"] = "no-cache"
@@ -507,12 +512,16 @@ def current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    user_id = decode_token(credentials.credentials)
-    if user_id is None:
+    decoded = decode_token(credentials.credentials)
+    if decoded is None:
         raise HTTPException(status_code=401, detail="トークンが無効です")
+    user_id, token_version = decoded
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="ユーザーが存在しません")
+    # トークン世代の不一致(DB作り直しでIDが別人になった等)は無効として扱う
+    if user.token_version != token_version:
+        raise HTTPException(status_code=401, detail="セッションが無効です。再度ログインしてください")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="このアカウントは無効化されています")
     return user
@@ -556,7 +565,7 @@ def get_main_site(db: Session) -> Site:
 
 def token_response(user: User, site: Site) -> TokenOut:
     return TokenOut(
-        token=create_token(user.id),
+        token=create_token(user.id, user.token_version),
         username=user.username,
         display_name=user.display_name or user.username,
         role=user.role,
@@ -3134,10 +3143,11 @@ def delete_demo_data(
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, token: str = ""):
-    user_id = decode_token(token)
-    if user_id is None:
+    decoded = decode_token(token)
+    if decoded is None:
         await ws.close(code=4001, reason="invalid token")
         return
+    user_id, token_version = decoded
 
     # ユーザー名をDBから取得
     db = SessionLocal()
@@ -3145,7 +3155,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = ""):
         user = db.get(User, user_id)
     finally:
         db.close()
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or user.token_version != token_version:
         await ws.close(code=4001, reason="unknown user")
         return
     if user.must_change_password:

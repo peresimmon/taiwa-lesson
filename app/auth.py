@@ -33,18 +33,27 @@ def verify_password(password: str, stored: str) -> bool:
     return secrets.compare_digest(candidate, digest)
 
 
-def create_token(user_id: int) -> str:
+def create_token(user_id: int, token_version: str) -> str:
+    """ユーザーID + そのユーザーのトークン世代(token_version)を署名して発行する。
+
+    token_versionはユーザー行ごとの乱数で、DBが作り直されて連番IDが振り直されても
+    新しいユーザーは別の値を持つ。これにより「IDだけ一致する別人のトークン」を弾ける。
+    """
     payload = {
         "sub": str(user_id),
+        "tv": token_version,
         "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def decode_token(token: str) -> int | None:
-    """トークンからユーザーIDを取り出す。無効なら None"""
+def decode_token(token: str) -> tuple[int, str] | None:
+    """トークンから (ユーザーID, token_version) を取り出す。無効なら None。
+
+    token_versionの一致確認は呼び出し側(DBのユーザー行と照合)で行う。
+    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return int(payload["sub"])
+        return int(payload["sub"]), str(payload.get("tv", ""))
     except (jwt.PyJWTError, KeyError, ValueError):
         return None
