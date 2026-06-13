@@ -733,6 +733,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 本日の予定バナー */
 .today-panel { border-left: 4px solid var(--accent); }
+/* ルーム詳細から誘導されたときに一瞬ハイライトする */
+@keyframes today-flash {
+  0%, 100% { box-shadow: var(--shadow); }
+  30% { box-shadow: 0 0 0 3px var(--accent); }
+}
+.today-panel.flash { animation: today-flash 0.8s ease-in-out 2; }
 .today-event-list { list-style: none; }
 .today-event-list li {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;

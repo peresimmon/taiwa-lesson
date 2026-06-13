@@ -2330,8 +2330,19 @@ function openRoomModal(room) {
     room.modes.still ? "静止画" : null,
     room.modes.camera ? "実映像" : null,
   ].filter(Boolean).join("・");
+  // 出欠制で入室できないとき、本日の予定にこのルームのイベントがあるか
+  const linkedToday = todayEvents.filter((e) => e.room_id === room.id);
+  let blockedHtml = "";
+  if (blocked) {
+    blockedHtml = linkedToday.length
+      ? `<p class="error">本日の出欠が「参加」になっていないため入室できません。
+          <button type="button" class="ev-link" id="room-goto-today">▶ 本日の予定で「参加」を選ぶ</button></p>`
+      : `<p class="error">本日このルームの開催予定が、あなたの「本日の予定」にありません。
+          参加対象のメンバーだけが入室できます。</p>`;
+  }
   const body = `
     <ul class="room-detail-list">
+      ${room.room_no != null ? `<li><span>ルームID</span><strong>ルーム${room.room_no}（{room${room.room_no}}）</strong></li>` : ""}
       ${room.topic ? `<li><span>今日の話題</span><strong>💬 ${escapeHtml(room.topic)}</strong></li>` : ""}
       <li><span>参加状況</span><strong>${room.participants}${room.capacity ? ` / ${room.capacity}` : ""}人</strong></li>
       <li><span>セッション時間</span><strong>${room.session_minutes}分</strong></li>
@@ -2344,8 +2355,7 @@ function openRoomModal(room) {
     </ul>
     ${room.attendance_required ? `<p class="note">📅 このルームは出欠制です。本日このルームに紐づくイベントで
       「参加」を選んだメンバーだけが入室でき、その人どうしでマッチングされます。</p>` : ""}
-    ${blocked ? `<p class="error">本日の出欠が「参加」になっていないため入室できません。
-      本日の予定から「参加」を選んでください。</p>` : ""}
+    ${blockedHtml}
     ${room.has_passphrase ? `<label>このルームには合言葉が必要です
       <input type="text" id="room-pass-input" maxlength="100" placeholder="合言葉を入力" autocomplete="off">
     </label>` : ""}
@@ -2363,6 +2373,18 @@ function openRoomModal(room) {
       title: "本日の予定から「参加」を選ぶと入室できます" }));
   }
   openModal(`ルーム: ${room.name}`, body, actions);
+  // 「本日の予定で参加を選ぶ」→ モーダルを閉じてバナーへスクロール&強調
+  if ($("room-goto-today")) $("room-goto-today").onclick = goToTodayBanner;
+}
+
+/* 本日の予定バナーへスクロールして注意を促す(出欠制ルームのRSVP導線) */
+function goToTodayBanner() {
+  closeModal();
+  const panel = $("today-panel");
+  if (!panel || panel.classList.contains("hidden")) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "center" });
+  panel.classList.add("flash");
+  setTimeout(() => panel.classList.remove("flash"), 1600);
 }
 
 /* モーダルからマッチング待機状態へ移行する */

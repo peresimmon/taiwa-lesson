@@ -3148,15 +3148,21 @@ def create_demo_data(
             start_time=["10:00", "14:00", "16:30", None][i % 4],
         ))
 
-    # ルームとお知らせ
+    # ルーム(サイト内一意の連番room_noを採番する。お知らせ本文の {roomN} で参照される)
+    from sqlalchemy import func as _func
+
+    next_room_no = (db.query(_func.max(Room.room_no)).filter(Room.site_id == sid).scalar() or 0) + 1
+
     db.add(
         Room(
             site_id=sid,
             creator_id=demo_users[0].id,
             name="デモ_雑談ルーム",
             topic="最近うれしかったこと",
+            room_no=next_room_no,
         )
     )
+    next_room_no += 1
 
     # 朝会の例: 営業チーム限定・出欠制マッチングのルーム + 本日のイベント。
     # チームメンバーの一部が「参加」、入室するとその人どうしでランダムにマッチングされる
@@ -3168,7 +3174,9 @@ def create_demo_data(
         topic="昨日の学び・今日やること",
         session_minutes=5,
         attendance_required=True,
+        room_no=next_room_no,
     )
+    next_room_no += 1
     db.add(morning_room)
     db.flush()
     morning_event = Event(
@@ -3195,14 +3203,17 @@ def create_demo_data(
     for m in demo_users[5:8]:  # デモメンバーを数名追加
         db.add(TeamMember(team_id=admin_team.id, user_id=m.id, is_leader=False))
     teams.append(admin_team)
-    # 出欠制ではない通常ルーム(本日のイベントから「入室する」ですぐ参加できる)
+    # 出欠制ルーム。administratorは管理者チームのメンバーなので、本日のミーティングが
+    # 「本日の予定」に出る → そこで参加/不参加を切り替えると入室ボタンの活性が変わるのを試せる
     admin_room = Room(
         site_id=sid, creator_id=admin.id, name="デモ_管理者ルーム",
         team_id=admin_team.id, topic="今日の気づきをシェア", session_minutes=10,
+        attendance_required=True, room_no=next_room_no,
     )
+    next_room_no += 1
     db.add(admin_room)
     db.flush()
-    # 本日のミーティング(ルーム連携)。administratorは「参加」済み
+    # 本日のミーティング(ルーム連携)。administratorは「参加」済み(本日の予定で切替可能)
     admin_today = Event(
         user_id=admin.id, title="管理者チーム ミーティング",
         date=today_str, start_time="13:00",
