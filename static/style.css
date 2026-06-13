@@ -463,6 +463,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* 本文の分量にかかわらず表示位置を固定する(上揃え)。これで「次へ」ボタンの位置が
    お知らせを切り替えてもずれない。長い本文は本文部分だけスクロールさせる */
 #ann-detail-overlay { align-items: flex-start; }
+/* 既読/未読ユーザー一覧(汎用モーダル #modal)は、お知らせ詳細オーバーレイ(z-index:100)の
+   上に重ねる。閉じると下のお知らせ詳細がそのまま見える。
+   #modal はDOM上で #ann-detail-overlay より前にあり、同じz-indexだと裏に隠れてしまうため上げる */
+#modal { z-index: 110; }
 .ann-detail-box {
   max-width: 620px; margin-top: 72px;
   max-height: calc(100vh - 120px);
