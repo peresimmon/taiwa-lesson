@@ -4,6 +4,33 @@
 
 const API_BASE = ""; // 同一オリジンで配信。別ホストに置く場合はここを変更
 
+// ---- テーマ -----------------------------------------------------------------
+// 配色の実体は style.css の [data-theme=...]。swatch はマイページの見本表示用
+const THEMES = [
+  { id: "standard", name: "スタンダード", swatch: ["#3d5a80", "#ee6c4d", "#fafaf8"] },
+  { id: "dark", name: "ダーク", swatch: ["#8fb4e3", "#f08a64", "#14181f"] },
+  { id: "sakura", name: "さくら", swatch: ["#ad4d68", "#d96a4e", "#f9e8ed"] },
+  { id: "forest", name: "わかば", swatch: ["#3f7252", "#d98e32", "#e5f0e7"] },
+  { id: "lavender", name: "ラベンダー", swatch: ["#6b5ca5", "#d2618d", "#ece9f6"] },
+];
+let currentTheme = localStorage.getItem("vm_theme") || "standard";
+if (!THEMES.some((t) => t.id === currentTheme)) currentTheme = "standard";
+
+function applyTheme(id) {
+  currentTheme = id;
+  if (id === "standard") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", id);
+  }
+  localStorage.setItem("vm_theme", id);
+  // PWAのステータスバー色もテーマのヘッダー色に追従させる
+  const headerBg = getComputedStyle(document.documentElement).getPropertyValue("--header-bg").trim();
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if (metaTheme && headerBg) metaTheme.content = headerBg;
+}
+applyTheme(currentTheme);
+
 // ---- 状態 -------------------------------------------------------------------
 let token = localStorage.getItem("vm_token") || "";
 let username = localStorage.getItem("vm_username") || "";
@@ -3243,10 +3270,26 @@ $("sys-site-form").onsubmit = async (e) => {
 $("user-name").onclick = () => showProfile();
 $("btn-profile-back").onclick = () => showLobby();
 
+function renderThemeGrid() {
+  $("theme-grid").innerHTML = THEMES.map(
+    (t) => `<button type="button" class="theme-option${t.id === currentTheme ? " selected" : ""}" data-theme-id="${t.id}">
+        <span class="theme-swatch">${t.swatch.map((c) => `<span style="background:${c}"></span>`).join("")}</span>
+        <strong>${t.name}</strong>
+      </button>`
+  ).join("");
+  $("theme-grid").querySelectorAll("[data-theme-id]").forEach((btn) => {
+    btn.onclick = () => {
+      applyTheme(btn.dataset.themeId);
+      renderThemeGrid();
+    };
+  });
+}
+
 async function showProfile() {
   $("profile-error").textContent = "";
   $("email-msg").textContent = "";
   $("ppw-msg").textContent = "";
+  renderThemeGrid();
   showScreen("profile");
   try {
     const [me, history, teams] = await Promise.all([

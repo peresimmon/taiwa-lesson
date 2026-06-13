@@ -6,6 +6,7 @@
   --primary-light: #e8edf4;
   --accent: #ee6c4d;
   --accent-dark: #d4553a;
+  --accent-light: #fdf1ec;
   --warm: #f8f0e5;
   --warm-dark: #e8d5bf;
   --bg: #fafaf8;
@@ -15,6 +16,104 @@
   --border: #e0ddd8;
   --success: #588157;
   --danger: #c1121f;
+  --on-primary: #ffffff;
+  --on-accent: #ffffff;
+  --header-bg: var(--primary);
+  --header-text: #ffffff;
+  --shadow: 0 2px 12px rgba(41, 50, 65, 0.07);
+  --shadow-strong: 0 8px 40px rgba(41, 50, 65, 0.35);
+  --focus-ring: rgba(61, 90, 128, 0.12);
+  --accent-ring: rgba(238, 108, 77, 0.15);
+  --accent-glow: rgba(238, 108, 77, 0.3);
+  --video-bg: #293241;
+  --overlay-bg: rgba(41, 50, 65, 0.55);
+  --chat-bg: rgba(255, 255, 255, 0.94);
+  color-scheme: light;
+}
+
+/* ===== テーマ =====
+ * <html data-theme="..."> で切り替える。マイページの「テーマ」から選択。 */
+[data-theme="dark"] {
+  --primary: #8fb4e3;
+  --primary-dark: #aac8ee;
+  --primary-light: #273344;
+  --accent: #f08a64;
+  --accent-dark: #f4a283;
+  --accent-light: #41302a;
+  --warm: #2b2822;
+  --warm-dark: #4d443a;
+  --bg: #14181f;
+  --card: #1e242e;
+  --text: #e8ebf1;
+  --muted: #98a4b5;
+  --border: #3a4452;
+  --success: #84b886;
+  --danger: #f17680;
+  --on-primary: #11161e;
+  --on-accent: #2a1610;
+  --header-bg: #0e1218;
+  --header-text: #e8ebf1;
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --shadow-strong: 0 8px 40px rgba(0, 0, 0, 0.6);
+  --focus-ring: rgba(143, 180, 227, 0.2);
+  --accent-ring: rgba(240, 138, 100, 0.25);
+  --accent-glow: rgba(240, 138, 100, 0.25);
+  --video-bg: #000000;
+  --overlay-bg: rgba(0, 0, 0, 0.6);
+  --chat-bg: rgba(30, 36, 46, 0.94);
+  color-scheme: dark;
+}
+
+[data-theme="sakura"] {
+  --primary: #ad4d68;
+  --primary-dark: #8e3a52;
+  --primary-light: #f9e8ed;
+  --accent: #d96a4e;
+  --accent-dark: #c0563c;
+  --accent-light: #fdf0ea;
+  --warm: #fbeef0;
+  --warm-dark: #efd3d9;
+  --bg: #fcf8f8;
+  --text: #3a2b31;
+  --muted: #8b7480;
+  --border: #ecdce0;
+  --focus-ring: rgba(173, 77, 104, 0.14);
+}
+
+[data-theme="forest"] {
+  --primary: #3f7252;
+  --primary-dark: #2f5840;
+  --primary-light: #e5f0e7;
+  --accent: #d98e32;
+  --accent-dark: #bf7a24;
+  --accent-light: #fbf1e2;
+  --warm: #f3f1e4;
+  --warm-dark: #ded7bd;
+  --bg: #f7faf5;
+  --text: #25332a;
+  --muted: #6c7d70;
+  --border: #d9e0d5;
+  --accent-ring: rgba(217, 142, 50, 0.2);
+  --accent-glow: rgba(217, 142, 50, 0.3);
+  --focus-ring: rgba(63, 114, 82, 0.14);
+}
+
+[data-theme="lavender"] {
+  --primary: #6b5ca5;
+  --primary-dark: #564a87;
+  --primary-light: #ece9f6;
+  --accent: #d2618d;
+  --accent-dark: #b94d77;
+  --accent-light: #faedf3;
+  --warm: #f1edf9;
+  --warm-dark: #dcd2ec;
+  --bg: #fbfafd;
+  --text: #2d2a3a;
+  --muted: #75718a;
+  --border: #e2dee9;
+  --accent-ring: rgba(210, 97, 141, 0.18);
+  --accent-glow: rgba(210, 97, 141, 0.3);
+  --focus-ring: rgba(107, 92, 165, 0.14);
 }
 
 body {
@@ -29,8 +128,8 @@ header {
   justify-content: space-between;
   align-items: center;
   padding: 14px 24px;
-  background: var(--primary);
-  color: #fff;
+  background: var(--header-bg);
+  color: var(--header-text);
 }
 header h1 { font-size: 1.15rem; font-weight: 600; letter-spacing: 0.5px; }
 header h1 small { font-size: 0.7rem; font-weight: 400; opacity: 0.8; margin-left: 8px; letter-spacing: 1px; }
@@ -55,7 +154,7 @@ main {
   background: var(--card);
   border-radius: 16px;
   padding: 32px;
-  box-shadow: 0 2px 12px rgba(41, 50, 65, 0.07);
+  box-shadow: var(--shadow);
   max-width: 620px;
   margin: 0 auto;
 }
@@ -75,16 +174,21 @@ main {
   background: transparent; color: var(--muted); font-size: 0.95rem; cursor: pointer;
   transition: all 0.2s;
 }
-.tab.active { background: var(--primary); color: #fff; font-weight: 600; }
+.tab.active { background: var(--primary); color: var(--on-primary); font-weight: 600; }
 
 /* フォーム */
 form label { display: block; margin-bottom: 16px; font-size: 0.9rem; color: var(--muted); font-weight: 500; }
-form input[type="text"], form input[type="password"], form textarea {
+form input[type="text"], form input[type="password"], form input[type="email"], form textarea {
   display: block; width: 100%; margin-top: 6px; padding: 11px 14px;
   border: 1.5px solid var(--border); border-radius: 10px; font-size: 1rem;
   font-family: inherit; background: var(--bg); transition: border-color 0.2s;
 }
-form input:focus, form textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(61,90,128,0.12); }
+form input:focus, form textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus-ring); }
+form input[type="number"] {
+  padding: 8px 10px; border: 1.5px solid var(--border); border-radius: 8px;
+  font-size: 0.95rem; font-family: inherit; background: var(--bg); color: var(--text);
+  width: 110px;
+}
 
 .checkbox-label { display: flex; align-items: center; gap: 8px; color: var(--text); }
 .checkbox-label input { width: 18px; height: 18px; accent-color: var(--primary); }
@@ -95,8 +199,8 @@ button { font-family: inherit; }
   padding: 13px 28px; border: none; border-radius: 12px;
   font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
 }
-.btn-primary { background: var(--accent); color: #fff; width: 100%; }
-.btn-primary:hover { background: var(--accent-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(238,108,77,0.3); }
+.btn-primary { background: var(--accent); color: var(--on-accent); width: 100%; }
+.btn-primary:hover { background: var(--accent-dark); transform: translateY(-1px); box-shadow: 0 4px 12px var(--accent-glow); }
 .btn-secondary { background: var(--warm); color: var(--text); border: 1.5px solid var(--warm-dark); }
 .btn-secondary:hover { background: var(--warm-dark); }
 .btn-danger { background: var(--danger); color: #fff; }
@@ -122,8 +226,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .role-btn small { font-size: 0.72rem; color: var(--muted); }
 .role-btn:hover { border-color: var(--primary); }
 .role-btn.selected {
-  border-color: var(--accent); background: #fdf1ec;
-  box-shadow: 0 0 0 3px rgba(238, 108, 77, 0.15);
+  border-color: var(--accent); background: var(--accent-light);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .waiting-role { font-weight: 600; color: var(--primary); }
@@ -165,14 +269,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .avatar-option:hover { border-color: var(--primary); }
 .avatar-option.selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(238, 108, 77, 0.15);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* 通話(セッション)画面 */
 .call-info {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
   background: var(--card); border-radius: 14px; padding: 10px 18px;
-  box-shadow: 0 2px 12px rgba(41, 50, 65, 0.07); margin-bottom: 12px;
+  box-shadow: var(--shadow); margin-bottom: 12px;
 }
 .call-id {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
@@ -182,10 +286,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .call-id strong { color: var(--text); font-size: 1.05rem; }
 .role-tag {
   font-size: 0.72rem; font-weight: 700; padding: 2px 10px;
-  border-radius: 999px; color: #fff;
+  border-radius: 999px;
 }
-.role-tag.speaker { background: var(--accent); }
-.role-tag.listener { background: var(--primary); }
+.role-tag.speaker { background: var(--accent); color: var(--on-accent); }
+.role-tag.listener { background: var(--primary); color: var(--on-primary); }
 
 .session-timer {
   text-align: center;
@@ -194,7 +298,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .session-timer small { font-size: 0.8rem; font-weight: 400; color: var(--muted); display: block; }
 .video-area {
-  position: relative; background: var(--text); border-radius: 16px;
+  position: relative; background: var(--video-bg); border-radius: 16px;
   overflow: hidden; aspect-ratio: 16 / 10;
 }
 #remote-video { width: 100%; height: 100%; object-fit: cover; }
@@ -240,7 +344,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   background: var(--card);
   border-radius: 16px;
   padding: 22px 24px;
-  box-shadow: 0 2px 12px rgba(41, 50, 65, 0.07);
+  box-shadow: var(--shadow);
 }
 .panel h3 {
   font-size: 1rem;
@@ -313,13 +417,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   transition: background 0.15s;
 }
 .calendar .day:hover { background: var(--primary-light); }
-.calendar .day.today { background: var(--primary); color: #fff; font-weight: 700; }
+.calendar .day.today { background: var(--primary); color: var(--on-primary); font-weight: 700; }
 .calendar .day.has-event::after {
   content: "";
   position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
   width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
 }
-.calendar .day.today.has-event::after { background: #fff; }
+.calendar .day.today.has-event::after { background: var(--on-primary); }
 
 .event-list { list-style: none; margin-top: 10px; max-height: 160px; overflow-y: auto; }
 .event-list li {
@@ -338,10 +442,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-family: inherit; background: var(--bg);
 }
 .inline-form input[type="date"] { flex: 0 0 auto; width: 140px; }
-.inline-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(61,90,128,0.12); }
+.inline-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus-ring); }
 .btn-small {
   padding: 8px 16px; border: none; border-radius: 8px;
-  background: var(--primary); color: #fff; font-weight: 600; cursor: pointer;
+  background: var(--primary); color: var(--on-primary); font-weight: 600; cursor: pointer;
   white-space: nowrap; transition: background 0.2s;
 }
 .btn-small:hover { background: var(--primary-dark); }
@@ -386,7 +490,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .admin-tab:hover { border-color: var(--primary); color: var(--primary); }
 .admin-tab.active {
   background: var(--primary); border-color: var(--primary);
-  color: #fff; font-weight: 600;
+  color: var(--on-primary); font-weight: 600;
 }
 
 /* 横幅いっぱいのパネル(ユーザー一覧・通報など) */
@@ -486,7 +590,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .room-card:hover {
   border-color: var(--accent); transform: translateY(-2px);
-  box-shadow: 0 4px 14px rgba(238, 108, 77, 0.18);
+  box-shadow: 0 4px 14px var(--accent-ring);
 }
 .room-card-head {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -547,19 +651,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* ===== オーバーレイ(警告・役割交代・デバイステスト) ===== */
 .overlay {
   position: fixed; inset: 0; z-index: 100;
-  background: rgba(41, 50, 65, 0.55);
+  background: var(--overlay-bg);
   display: flex; align-items: center; justify-content: center;
   padding: 16px;
 }
 .overlay-box {
   background: var(--card); border-radius: 16px; padding: 26px 28px;
   max-width: 560px; width: 100%; max-height: 86vh; overflow-y: auto;
-  box-shadow: 0 8px 40px rgba(41, 50, 65, 0.35);
+  box-shadow: var(--shadow-strong);
 }
 .overlay-box h3 { color: var(--primary); margin-bottom: 12px; }
 .overlay-box .btn-row { margin-top: 16px; }
 .warning-message {
-  background: #fdf1ec; border: 1.5px solid var(--accent);
+  background: var(--accent-light); border: 1.5px solid var(--accent);
   border-radius: 10px; padding: 14px 16px; line-height: 1.9; white-space: pre-wrap;
 }
 
@@ -571,7 +675,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   transition: all 0.15s;
 }
 .btn-ctl:hover { border-color: var(--primary); }
-.btn-ctl.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-ctl.active { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .btn-ctl.warn { color: var(--danger); }
 .btn-ctl.attention::after { content: "●"; color: var(--accent); margin-left: 4px; }
 
@@ -588,7 +692,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-panel {
   position: absolute; right: 12px; top: 12px; bottom: 12px;
   width: min(290px, 70%);
-  background: rgba(255, 255, 255, 0.94); border-radius: 12px;
+  background: var(--chat-bg); border-radius: 12px;
   display: flex; flex-direction: column; padding: 10px;
   backdrop-filter: blur(4px);
 }
@@ -599,7 +703,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: inline-block; background: var(--primary-light);
   border-radius: 10px; padding: 5px 10px; word-break: break-word;
 }
-.chat-msg.mine span { background: #fdf1ec; }
+.chat-msg.mine span { background: var(--accent-light); }
 .chat-form { display: flex; gap: 6px; margin-top: 8px; }
 .chat-form input {
   flex: 1; min-width: 0; padding: 7px 10px;
@@ -620,7 +724,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-family: inherit; font-size: 0.82rem; background: var(--bg);
 }
 .test-preview {
-  background: var(--text); border-radius: 12px; overflow: hidden;
+  background: var(--video-bg); border-radius: 12px; overflow: hidden;
   aspect-ratio: 16 / 10; margin: 10px 0;
 }
 .test-preview video, .test-preview canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -631,6 +735,31 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-radius: 999px; overflow: hidden;
 }
 #mic-level { height: 100%; width: 0%; background: var(--success); transition: width 0.08s; }
+
+/* テーマ選択(マイページ) */
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.theme-option {
+  display: flex; align-items: center; gap: 10px;
+  border: 2px solid var(--border); border-radius: 12px;
+  padding: 10px 12px; background: var(--card); cursor: pointer;
+  font-family: inherit; transition: all 0.15s; text-align: left;
+}
+.theme-option:hover { border-color: var(--primary); }
+.theme-option.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.theme-option strong { font-size: 0.88rem; color: var(--text); font-weight: 600; }
+.theme-swatch { display: flex; flex-shrink: 0; }
+.theme-swatch span {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--card); margin-left: -6px;
+}
+.theme-swatch span:first-child { margin-left: 0; }
 
 @media (max-width: 560px) {
   .card { padding: 22px 18px; }

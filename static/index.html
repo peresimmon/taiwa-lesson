@@ -7,6 +7,13 @@
   <!-- PWA -->
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#3d5a80">
+  <!-- 保存済みテーマをCSS読込前に適用(ちらつき防止)。一覧は app.js の THEMES 参照 -->
+  <script>
+    (function () {
+      var t = localStorage.getItem("vm_theme");
+      if (t && t !== "standard") document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
   <link rel="icon" type="image/png" href="/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -375,6 +382,12 @@
             <button type="submit" class="btn-small">変更する</button>
             <p id="ppw-msg" class="note"></p>
           </form>
+        </div>
+
+        <div class="panel">
+          <h3>テーマ</h3>
+          <p class="note" style="margin-bottom:10px">画面の配色を選べます（この端末に保存されます）</p>
+          <div id="theme-grid" class="theme-grid"></div>
         </div>
 
         <div class="panel">
