@@ -468,12 +468,41 @@ async function handleWSMessage(msg) {
       }
       break;
 
+    case "stats":
+      // サーバーからのリアルタイム統計(待機人数・オンライン・ルーム人数)
+      applyLiveStats(msg);
+      break;
+
     case "error":
       $("lobby-error").textContent = msg.message || "エラーが発生しました";
       cleanupCall();
       showScreen("lobby");
       break;
   }
+}
+
+/* WS配信(type:"stats")でダッシュボードの待機人数・オンライン・ルーム参加人数を即時更新する。
+   total_users は配信に含めないため据え置き(15秒ポーリングと初回ロードで反映) */
+function applyLiveStats(s) {
+  if (!siteConfig) return;  // ダッシュボード未ロード時は無視
+  $("stat-online").textContent = s.online;
+  if (siteConfig.role_matching) {
+    $("stat-speakers").textContent = s.waiting_speakers;
+    $("stat-listeners").textContent = s.waiting_listeners;
+  } else {
+    $("stat-speakers").textContent = s.waiting;
+  }
+  if (s.rooms) updateRoomParticipants(s.rooms);
+}
+
+/* ルームカードの「参加人数」をリアルタイム更新する。roomsMap は {ルームID(文字列): 人数} */
+function updateRoomParticipants(roomsMap) {
+  myRooms.forEach((r) => {
+    const n = roomsMap[String(r.id)] || 0;
+    r.participants = n;  // キャッシュも更新(モーダルを開き直したときに反映される)
+    const span = $("room-list").querySelector(`[data-room-participants="${r.id}"]`);
+    if (span) span.textContent = n;
+  });
 }
 
 // ---- マッチング -----------------------------------------------------------------
@@ -2285,7 +2314,7 @@ async function loadRooms() {
             </div>
             ${r.topic ? `<div class="room-card-topic">💬 ${escapeHtml(r.topic)}</div>` : ""}
             <div class="room-card-meta">
-              ${r.participants}${r.capacity ? "/" + r.capacity : ""}人参加中 ・ ${r.session_minutes}分
+              <span data-room-participants="${r.id}">${r.participants}</span>${r.capacity ? "/" + r.capacity : ""}人参加中 ・ ${r.session_minutes}分
               ${r.role_matching ? " ・ 話し手×聞き手" : ""}
             </div>
             <div class="room-card-join">詳細を見る →</div>

@@ -2058,7 +2058,8 @@ def stats(user: User = Depends(active_user), db: Session = Depends(get_db)):
     return {
         "total_users": db.query(User).filter(User.site_id == user.site_id).count(),
         "online": manager.online_count(user.site_id),
-        "waiting": counts["speakers"] + counts["listeners"],
+        # 役割なしマッチングの待機者は any 列に入るので合算する
+        "waiting": counts["speakers"] + counts["listeners"] + counts["any"],
         "waiting_speakers": counts["speakers"],
         "waiting_listeners": counts["listeners"],
     }

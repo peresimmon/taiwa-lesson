@@ -117,6 +117,39 @@ class MatchingManager:
         )
         return waiting + active
 
+    def _room_counts(self, site_id: int) -> dict[str, int]:
+        """サイト内の各ルーム(room_id>0)の現在人数(待機+通話中)。0人のルームは含めない。
+        JSONのオブジェクトキーは文字列にする(フロントで room.id を文字列化して参照する)"""
+        counts: dict[int, int] = {}
+        for (sid, rid, _), q in self.waiting.items():
+            if sid == site_id and rid:
+                counts[rid] = counts.get(rid, 0) + len(q)
+        for c in self.clients.values():
+            if c.site_id == site_id and c.room is not None and c.active_room_id:
+                counts[c.active_room_id] = counts.get(c.active_room_id, 0) + 1
+        return {str(rid): n for rid, n in counts.items()}
+
+    def site_stats(self, site_id: int) -> dict:
+        """ダッシュボードのリアルタイム表示用の統計。ロビーの待機人数・オンライン人数・
+        各ルームの参加人数(`type:"stats"` でWS配信する)"""
+        counts = self.waiting_counts(site_id)  # room_id=0(ロビー通話)の待機列
+        return {
+            "type": "stats",
+            "online": self.online_count(site_id),
+            # 役割ありなら speakers+listeners、役割なしなら any。両者を合算して常に正しい総数に
+            "waiting": counts["speakers"] + counts["listeners"] + counts["any"],
+            "waiting_speakers": counts["speakers"],
+            "waiting_listeners": counts["listeners"],
+            "rooms": self._room_counts(site_id),
+        }
+
+    async def broadcast_stats(self, site_id: int) -> None:
+        """サイト内の全接続クライアントへ最新の統計を配信する(待機人数などのリアルタイム更新)。
+        lockは取得しないこと(送信は best-effort。スナップショットの作成は同期的で原子的)"""
+        payload = self.site_stats(site_id)
+        for client in [c for c in self.clients.values() if c.site_id == site_id]:
+            await client.send(payload)
+
     def _in_queue(self, client: Client) -> bool:
         return any(client in queue for queue in self.waiting.values())
 
@@ -133,13 +166,15 @@ class MatchingManager:
             if client.user_id in self.clients:
                 return False
             self.clients[client.user_id] = client
-            return True
+        await self.broadcast_stats(client.site_id)  # オンライン人数の更新を配信
+        return True
 
     async def disconnect(self, client: Client) -> None:
         async with self.lock:
             self.clients.pop(client.user_id, None)
             self._remove_from_queues(client)
             await self._teardown_room(client, notify_type="peer_left")
+        await self.broadcast_stats(client.site_id)  # オンライン・待機人数・ルーム人数の更新を配信
 
     # --- マッチング ---------------------------------------------------------
 
@@ -168,6 +203,8 @@ class MatchingManager:
             else:
                 self._queue(client.site_id, room_id, role).append(client)
                 await client.send({"type": "queued", "role": role, "room_id": room_id})
+        # 待機開始 or マッチ成立で待機人数・ルーム人数が変わるので配信
+        await self.broadcast_stats(client.site_id)
 
     async def kick_room_queue(self, site_id: int, room_id: int) -> None:
         """ルーム削除時に待機中のクライアントを待機解除する"""
@@ -178,6 +215,7 @@ class MatchingManager:
                 for client in list(queue):
                     queue.remove(client)
                     await client.send({"type": "error", "message": "ルームが削除されました"})
+        await self.broadcast_stats(site_id)
 
     async def _create_room(self, a: Client, b: Client) -> None:
         """部屋を作り、セッション限定の呼び名を割り振って双方に通知する(lock取得済みで呼ぶこと)"""
@@ -210,6 +248,7 @@ class MatchingManager:
     async def cancel_queue(self, client: Client) -> None:
         async with self.lock:
             self._remove_from_queues(client)
+        await self.broadcast_stats(client.site_id)  # 待機解除で待機人数の更新を配信
 
     # --- 同意フロー ---------------------------------------------------------
 
@@ -287,6 +326,7 @@ class MatchingManager:
     async def leave_call(self, client: Client) -> None:
         async with self.lock:
             await self._teardown_room(client, notify_type="peer_left")
+        await self.broadcast_stats(client.site_id)  # 通話終了でルーム人数の更新を配信
 
     async def _teardown_room(self, client: Client, notify_type: str) -> None:
         """部屋を解散する(lock取得済みで呼ぶこと)"""

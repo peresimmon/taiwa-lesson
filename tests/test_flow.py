@@ -1738,6 +1738,36 @@ def test_moderator_admin(users, admin_headers):
           requests.delete(f"{BASE}/api/admin/users/{uid}", headers=mh).status_code == 403)
 
 
+async def test_realtime_stats(users):
+    print("[28] 待機人数のリアルタイム配信(WS stats)")
+    ws1 = await websockets.connect(f"{WS_BASE}/ws?token={users[0]['token']}")
+    ws2 = await websockets.connect(f"{WS_BASE}/ws?token={users[1]['token']}")
+
+    async def recv_stats(ws, pred, timeout=5):
+        """type:"stats" のメッセージのうち条件を満たすものが来るまで読む
+        (接続時など先行する stats を読み飛ばす)"""
+        while True:
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout))
+            if msg.get("type") == "stats" and pred(msg):
+                return msg
+
+    # ws1 が待機開始 → 同一サイトの ws2 に stats が配信される
+    await ws1.send(json.dumps({"type": "join_queue", "role": "speaker"}))
+    await recv_type(ws1, "queued")
+    s = await recv_stats(ws2, lambda m: m["waiting"] >= 1)
+    check("待機開始で待機人数が配信される", s["waiting"] >= 1 and s["waiting_speakers"] >= 1, s)
+    check("statsにオンライン人数が含まれる", s["online"] >= 2, s)
+    check("statsにルーム別人数が含まれる", isinstance(s.get("rooms"), dict), s)
+
+    # ws1 が待機解除 → 待機人数が0に戻ったことが配信される
+    await ws1.send(json.dumps({"type": "cancel_queue"}))
+    s2 = await recv_stats(ws2, lambda m: m["waiting"] == 0)
+    check("待機解除で待機人数の更新が配信される", s2["waiting"] == 0, s2)
+
+    await ws1.close()
+    await ws2.close()
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -1745,6 +1775,7 @@ async def main():
     await test_same_role_no_match(users)
     await test_decline_flow(users)
     await test_disconnect_during_wait(users)
+    await test_realtime_stats(users)
     test_dashboard(users)
     admin_headers = test_admin(users)
     test_multitenant(users, admin_headers)
