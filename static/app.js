@@ -222,11 +222,13 @@ function showLobby() {
 }
 
 async function ensureWS() {
+  wsShouldConnect = true; // 切断されたら自動再接続する
   if (ws && ws.readyState <= WebSocket.OPEN) return;
   try {
     await connectWS();
   } catch (err) {
     $("lobby-error").textContent = err.message;
+    scheduleReconnect(); // 初回接続に失敗しても諦めず再試行
   }
 }
 
@@ -247,6 +249,10 @@ function logout() {
   // ログイン画面は必ずスタンダードで表示する
   applyTheme("standard", false);
   cleanupCall();
+  // 自動再接続を止めてから切断する
+  wsShouldConnect = false;
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  wsReconnectAttempts = 0;
   if (ws) { ws.close(); ws = null; }
   $("user-info").classList.add("hidden");
   showScreen("auth");
@@ -337,11 +343,21 @@ $("password-form").onsubmit = async (e) => {
 };
 
 // ---- WebSocket ----------------------------------------------------------------
+/** ログイン中でWSを張っておきたいか(ログアウトで false にして自動再接続を止める)。 @type {boolean} */
+let wsShouldConnect = false;
+/** 再接続のバックオフ回数(成功で0にリセット)。 @type {number} */
+let wsReconnectAttempts = 0;
+/** 再接続待ちのタイマー(多重スケジュール防止)。 @type {number|null} */
+let wsReconnectTimer = null;
+
 function connectWS() {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
-    ws.onopen = () => resolve();
+    ws.onopen = () => {
+      wsReconnectAttempts = 0; // 接続できたらバックオフをリセット
+      resolve();
+    };
     ws.onerror = () => reject(new Error("サーバーに接続できません"));
     ws.onmessage = (e) => handleWSMessage(JSON.parse(e.data));
     ws.onclose = () => {
@@ -352,11 +368,34 @@ function connectWS() {
       );
       if (active) {
         cleanupCall();
-        $("lobby-error").textContent = "サーバーとの接続が切れました";
+        $("lobby-error").textContent = "サーバーとの接続が切れました。再接続しています…";
         showScreen("lobby");
       }
+      // ログイン中なら自動再接続(指数バックオフ)
+      if (wsShouldConnect && token) scheduleReconnect();
     };
   });
+}
+
+/* 切断時に指数バックオフ(1s,2s,4s…最大30s)で自動再接続する。
+   再接続できたら、切断中に変化した統計を取り直す */
+function scheduleReconnect() {
+  if (wsReconnectTimer) return; // すでに予約済み
+  const delay = Math.min(30000, 1000 * 2 ** wsReconnectAttempts);
+  wsReconnectAttempts++;
+  wsReconnectTimer = setTimeout(async () => {
+    wsReconnectTimer = null;
+    if (!wsShouldConnect || !token) return;
+    try {
+      await connectWS();
+      if (!$("screen-lobby").classList.contains("hidden")) {
+        $("lobby-error").textContent = "";
+        try { renderStats(await api("/api/stats")); } catch { /* 一時失敗は無視 */ }
+      }
+    } catch {
+      scheduleReconnect(); // まだ繋がらなければ次のバックオフで再試行
+    }
+  }, delay);
 }
 
 function wsSend(payload) {
@@ -380,6 +419,8 @@ async function handleWSMessage(msg) {
         $("waiting-role").textContent = `あなたの役割: ${roleLabel(msg.role)}`;
         $("waiting-note").textContent = `${roleLabel(opposite)}の方が見つかり次第、自動的にマッチングされます。`;
       }
+      // 直近の統計があればすぐ表示(自分のjoinで届くstatsでも即更新される)
+      if (lastStats) updateWaitingStats(lastStats); else $("waiting-stats").textContent = "";
       showScreen("waiting");
       break;
     }
@@ -483,8 +524,14 @@ async function handleWSMessage(msg) {
 
 /* WS配信(type:"stats")でダッシュボードの待機人数・オンライン・ルーム参加人数を即時更新する。
    total_users は配信に含めないため据え置き(15秒ポーリングと初回ロードで反映) */
+/** 直近に受信した統計(待機画面に入った直後の表示に使う)。 @type {Object|null} */
+let lastStats = null;
+
 function applyLiveStats(s) {
-  if (!siteConfig) return;  // ダッシュボード未ロード時は無視
+  lastStats = s;
+  // 待機画面を開いている間は待機人数の目安を更新(siteConfig未ロードでも動く)
+  if (!$("screen-waiting").classList.contains("hidden")) updateWaitingStats(s);
+  if (!siteConfig) return;  // ダッシュボード未ロード時はここまで
   $("stat-online").textContent = s.online;
   if (siteConfig.role_matching) {
     $("stat-speakers").textContent = s.waiting_speakers;
@@ -493,6 +540,24 @@ function applyLiveStats(s) {
     $("stat-speakers").textContent = s.waiting;
   }
   if (s.rooms) updateRoomParticipants(s.rooms);
+}
+
+/* 待機画面に「現在の待機人数・オンライン人数」と待ち時間の目安を表示する。
+   待機人数はWS配信でリアルタイムに変わる。正確な待ち時間は出せないため、人数に応じた
+   定性的な目安を示す(過度な期待を持たせない正直な表現) */
+function updateWaitingStats(s) {
+  const others = Math.max(0, (s.online || 0) - 1); // 自分以外のオンライン
+  let hint;
+  if (others === 0) {
+    hint = "いまはオンラインがあなただけのようです。相手が来ると自動でつながります。";
+  } else if (s.waiting >= 2) {
+    hint = "まもなくマッチングできそうです。";
+  } else {
+    hint = "相手が見つかり次第、すぐにつながります。";
+  }
+  $("waiting-stats").innerHTML =
+    `🟢 オンライン <strong>${s.online ?? "-"}</strong>人 ・ 待機中 <strong>${s.waiting ?? "-"}</strong>人<br>` +
+    `<span class="note">${hint}</span>`;
 }
 
 /* ルームカードの「参加人数」をリアルタイム更新する。roomsMap は {ルームID(文字列): 人数} */
@@ -2796,6 +2861,26 @@ function openEventModal(date) {
 }
 
 $("btn-event-new").onclick = () => openEventModal("");
+// 予定をiCal(.ics)で書き出してダウンロード(カレンダーアプリに取り込める)
+$("btn-ical").onclick = async () => {
+  try {
+    const res = await fetch(API_BASE + "/api/events/ical", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`エラー (${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "taiwa-lesson.ics";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    $("lobby-error").textContent = err.message;
+  }
+};
 $("btn-event-cancel").onclick = () => $("event-overlay").classList.add("hidden");
 // 繰り返しを選ぶと終了日の入力欄を出す
 $("event-repeat").onchange = () => {
@@ -2908,10 +2993,56 @@ let adminUsers = [];
 /** 管理画面ユーザー一覧の並び順。`dir` は 1=昇順 / -1=降順。 @type {{key: string, dir: number}} */
 let adminUserSort = { key: "id", dir: 1 };
 
+/** ユーザー一覧の表示ページ(1始まり)と1ページ件数・総件数。 */
+let adminUserPage = 1;
+const ADMIN_USER_PAGE_SIZE = 25;
+let adminUserTotal = 0;
+
 async function loadAdminUsers() {
-  adminUsers = await api("/api/admin/users");
+  // 検索・絞り込み・ページングをサーバーに渡す(総件数は X-Total-Count ヘッダで受け取る)
+  const params = new URLSearchParams();
+  const q = $("user-search").value.trim();
+  const role = $("user-filter-role").value;
+  const active = $("user-filter-active").value;
+  if (q) params.set("q", q);
+  if (role) params.set("role", role);
+  if (active) params.set("active", active);
+  params.set("limit", ADMIN_USER_PAGE_SIZE);
+  params.set("offset", (adminUserPage - 1) * ADMIN_USER_PAGE_SIZE);
+  const res = await fetch(API_BASE + "/api/admin/users?" + params.toString(), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    throw new Error(d.detail || `エラー (${res.status})`);
+  }
+  adminUsers = await res.json();
+  adminUserTotal = parseInt(res.headers.get("X-Total-Count") || String(adminUsers.length), 10);
   renderAdminUsers();
+  renderAdminUserPager();
 }
+
+function renderAdminUserPager() {
+  const pages = Math.max(1, Math.ceil(adminUserTotal / ADMIN_USER_PAGE_SIZE));
+  if (adminUserPage > pages) adminUserPage = pages;
+  const fromN = adminUserTotal === 0 ? 0 : (adminUserPage - 1) * ADMIN_USER_PAGE_SIZE + 1;
+  const toN = Math.min(adminUserPage * ADMIN_USER_PAGE_SIZE, adminUserTotal);
+  $("admin-user-pager").innerHTML =
+    `<button class="btn-text" id="user-prev" ${adminUserPage <= 1 ? "disabled" : ""}>◀ 前</button>` +
+    `<span class="note">${adminUserTotal}人中 ${fromN}–${toN}（${adminUserPage}/${pages}ページ）</span>` +
+    `<button class="btn-text" id="user-next" ${adminUserPage >= pages ? "disabled" : ""}>次 ▶</button>`;
+  $("user-prev").onclick = () => { if (adminUserPage > 1) { adminUserPage--; loadAdminUsers(); } };
+  $("user-next").onclick = () => { if (adminUserPage < pages) { adminUserPage++; loadAdminUsers(); } };
+}
+
+// 検索(入力をデバウンス)・絞り込み。変更時は1ページ目から再取得
+let userSearchTimer = null;
+$("user-search").oninput = () => {
+  clearTimeout(userSearchTimer);
+  userSearchTimer = setTimeout(() => { adminUserPage = 1; loadAdminUsers().catch((e) => $("admin-error").textContent = e.message); }, 300);
+};
+$("user-filter-role").onchange = () => { adminUserPage = 1; loadAdminUsers().catch((e) => $("admin-error").textContent = e.message); };
+$("user-filter-active").onchange = () => { adminUserPage = 1; loadAdminUsers().catch((e) => $("admin-error").textContent = e.message); };
 
 // 列見出しクリックでソート(同じ列をもう一度押すと昇順/降順を切替)
 document.querySelectorAll("#admin-user-head .sortable").forEach((th) => {
@@ -3132,6 +3263,15 @@ $("admin-user-form").onsubmit = async (e) => {
   }
 };
 
+// レポートの期間指定(start/end)を適用 / 解除
+$("btn-report-apply").onclick = () =>
+  loadAdminReport().catch((e) => $("admin-error").textContent = e.message);
+$("btn-report-clear").onclick = () => {
+  $("report-start").value = "";
+  $("report-end").value = "";
+  loadAdminReport().catch((e) => $("admin-error").textContent = e.message);
+};
+
 $("btn-export-csv").onclick = async () => {
   try {
     const res = await fetch("/api/admin/report/export", {
@@ -3291,7 +3431,14 @@ $("btn-bulk-users").onclick = async () => {
 
 // --- 利用レポート ---
 async function loadAdminReport() {
-  const r = await api("/api/admin/report");
+  const params = new URLSearchParams();
+  const start = $("report-start").value;
+  const end = $("report-end").value;
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  const r = await api("/api/admin/report" + (params.toString() ? "?" + params.toString() : ""));
+  $("report-daily-label").textContent =
+    r.start && r.end ? `${r.start} 〜 ${r.end} のセッション数` : "直近14日のセッション数";
   $("report-numbers").innerHTML = `
     <div class="stat"><span>${r.total_users}</span><small>登録者</small></div>
     <div class="stat"><span>${r.total_sessions}</span><small>総セッション</small></div>
@@ -4434,10 +4581,82 @@ async function showProfile() {
     $("profile-teams").querySelectorAll("[data-pteam]").forEach((btn) => {
       btn.onclick = () => showTeamScreen(parseInt(btn.dataset.pteam, 10));
     });
+    await loadJournal();
   } catch (err) {
     $("profile-error").textContent = err.message;
   }
 }
+
+/* 振り返りメモ(プライベートジャーナル)。本人だけが閲覧・編集・削除できる */
+async function loadJournal() {
+  const items = await api("/api/journal");
+  $("journal-list").innerHTML = items.length
+    ? items
+        .map(
+          (j) => `<li class="journal-item">
+            <div class="journal-body" data-jbody="${j.id}">${escapeHtml(j.body)}</div>
+            <div class="journal-meta">
+              <span class="h-date">${parseUTC(j.created_at).toLocaleString("ja-JP")}</span>
+              <button class="btn-text" data-jedit="${j.id}">編集</button>
+              <button class="btn-text danger" data-jdel="${j.id}">削除</button>
+            </div>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty-note">まだメモはありません。セッションの気づきを残してみましょう。</li>';
+  $("journal-list").querySelectorAll("[data-jdel]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm("このメモを削除しますか？")) return;
+      try {
+        await api(`/api/journal/${btn.dataset.jdel}`, "DELETE");
+        await loadJournal();
+      } catch (err) {
+        $("journal-msg").textContent = err.message;
+      }
+    };
+  });
+  $("journal-list").querySelectorAll("[data-jedit]").forEach((btn) => {
+    btn.onclick = () => editJournal(parseInt(btn.dataset.jedit, 10));
+  });
+}
+
+/* メモをその場でテキストエリアに展開して編集・保存する */
+function editJournal(id) {
+  const div = $("journal-list").querySelector(`[data-jbody="${id}"]`);
+  if (!div || div.dataset.editing) return;
+  const current = div.textContent;
+  div.dataset.editing = "1";
+  div.innerHTML =
+    `<textarea class="journal-edit" rows="2" maxlength="4000">${escapeHtml(current)}</textarea>
+     <div><button class="btn-small" data-jsave="${id}">保存</button>
+     <button class="btn-text" data-jcancel="${id}">キャンセル</button></div>`;
+  div.querySelector(`[data-jsave]`).onclick = async () => {
+    const body = div.querySelector(".journal-edit").value.trim();
+    if (!body) return;
+    try {
+      await api(`/api/journal/${id}`, "PUT", { body });
+      await loadJournal();
+    } catch (err) {
+      $("journal-msg").textContent = err.message;
+    }
+  };
+  div.querySelector(`[data-jcancel]`).onclick = () => loadJournal();
+}
+
+$("journal-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("journal-msg").textContent = "";
+  const body = $("journal-body").value.trim();
+  if (!body) return;
+  try {
+    await api("/api/journal", "POST", { body });
+    $("journal-body").value = "";
+    $("journal-msg").textContent = "メモを追加しました";
+    await loadJournal();
+  } catch (err) {
+    $("journal-msg").textContent = err.message;
+  }
+};
 
 $("email-form").onsubmit = async (e) => {
   e.preventDefault();

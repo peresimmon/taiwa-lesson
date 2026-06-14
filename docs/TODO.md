@@ -2,6 +2,19 @@
 
 デモでは不要だが、本番運用までに必ず対応する項目。
 
+## アーキテクチャ前提（重要）
+
+- **本サービスは「単一プロセス・単一インスタンス」での稼働を前提**にしている。
+  以下の状態を**プロセス内メモリ**で保持しているため、ワーカーやインスタンスを増やすと
+  待機列・通話・統計・設定が分断して破綻する:
+  - マッチングの待機列・WebSocket接続・通話セッション（`app/matching.py` の `MatchingManager`）
+  - リアルタイム統計のブロードキャスト（同じく `MatchingManager`。配信先は自プロセスの接続のみ）
+  - サイト設定のキャッシュ（`app/main.py` の `_settings_cache`）
+- **当面の運用ルール**: Render/Cloud Run などのスケール設定は **インスタンス数=1・ワーカー数=1** に固定する。
+  現状の起動コマンド（`render.yaml` / `Dockerfile`）は uvicorn 1ワーカーで、この前提を満たしている。
+- **水平スケールが必要になったら**: 待機列・WS・統計を **Redis（pub/sub＋共有状態）** に外部化し、
+  設定キャッシュも Redis か短TTLに置き換える。それまでは1インスタンス運用を厳守する。
+
 ## インフラ
 
 - [ ] **TURNサーバーの導入** — 現在はGoogle STUNのみ。企業ネットワークやモバイル回線同士では
@@ -13,9 +26,10 @@
       ※永続化しないと連番IDが振り直される。現在は `token_version`(ユーザー行ごとの乱数)で
       「IDだけ一致する別人のトークン」を弾いているため*別人として勝手にログインする事故は防げている*が、
       正規ユーザーも再デプロイのたびにログアウトされる。恒久対応にはDB永続化が必要
-- [ ] **SECRET_KEYの設定** — JWT署名キーが既定値(`dev-secret-change-me`)のまま。Cloud Runの環境変数に
-      32バイト以上の乱数(`python -c "import secrets; print(secrets.token_urlsafe(48))"`)を設定する。
-      設定後はインスタンス間で署名キーが共有され、トークンの整合が取れる
+- [x] **SECRET_KEYの設定** — Renderデプロイでは `render.yaml` の `generateValue: true` で
+      ランダムな安定値が自動設定される（既定値 `dev-secret-change-me` はローカル開発時のみ）。
+      他環境（Cloud Run等）に移す場合は環境変数 `SECRET_KEY` に
+      32バイト以上の乱数(`python -c "import secrets; print(secrets.token_urlsafe(48))"`)を設定すること
 
 ## セキュリティ
 

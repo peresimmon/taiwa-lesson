@@ -153,7 +153,10 @@
           </div>
           <div id="calendar" class="calendar"></div>
           <ul id="event-list" class="event-list"></ul>
-          <button type="button" id="btn-event-new" class="btn-small">イベントを作成</button>
+          <div class="cal-actions">
+            <button type="button" id="btn-event-new" class="btn-small">イベントを作成</button>
+            <button type="button" id="btn-ical" class="btn-text" title="予定をカレンダーアプリに取り込む(リマインドも各アプリで設定できます)">📅 カレンダーに取り込む(.ics)</button>
+          </div>
         </div>
 
         <div class="panel">
@@ -185,6 +188,7 @@
       <h2>対話の相手を探しています…</h2>
       <p id="waiting-role" class="waiting-role"></p>
       <p id="waiting-note">相手が見つかり次第、自動的にマッチングされます。</p>
+      <p id="waiting-stats" class="waiting-stats note"></p>
       <div class="btn-row center">
         <button id="btn-device-test" class="btn-secondary">カメラ・マイク・アバターをテスト</button>
         <button id="btn-cancel-matching" class="btn-secondary">キャンセル</button>
@@ -422,6 +426,16 @@
         </div>
 
         <div class="panel">
+          <h3>振り返りメモ <span class="note">（自分だけが見られます）</span></h3>
+          <form id="journal-form">
+            <textarea id="journal-body" rows="2" maxlength="4000" placeholder="今日のセッションで気づいたこと、次に試したいこと…"></textarea>
+            <button type="submit" class="btn-small">メモを追加</button>
+          </form>
+          <p id="journal-msg" class="note"></p>
+          <ul id="journal-list" class="history-list"></ul>
+        </div>
+
+        <div class="panel">
           <h3>所属チーム</h3>
           <ul id="profile-teams" class="event-list"></ul>
         </div>
@@ -459,6 +473,21 @@
             <button type="button" id="btn-bulk-users" class="btn-small">一括登録</button>
             <div id="bulk-result" class="bulk-result"></div>
           </details>
+          <div class="admin-filter-bar">
+            <input type="search" id="user-search" placeholder="🔍 ユーザー名・表示名・メールで検索" maxlength="50">
+            <select id="user-filter-role">
+              <option value="">権限: すべて</option>
+              <option value="user">一般</option>
+              <option value="moderator">モデレータ</option>
+              <option value="site_admin">サイト管理者</option>
+              <option value="system_admin">システム管理者</option>
+            </select>
+            <select id="user-filter-active">
+              <option value="">状態: すべて</option>
+              <option value="true">有効のみ</option>
+              <option value="false">無効のみ</option>
+            </select>
+          </div>
           <div class="admin-table-wrap">
             <table class="admin-table">
               <thead>
@@ -476,6 +505,7 @@
               <tbody id="admin-user-rows"></tbody>
             </table>
           </div>
+          <div class="admin-pager" id="admin-user-pager"></div>
         </div>
 
       </div>
@@ -593,8 +623,14 @@
         <div class="dash-grid">
           <div class="panel">
             <h3>利用レポート <button type="button" id="btn-export-csv" class="btn-small" style="float:right">CSVエクスポート</button></h3>
+            <div class="admin-filter-bar report-period">
+              <label>期間 <input type="date" id="report-start"></label>
+              <label>〜 <input type="date" id="report-end"></label>
+              <button type="button" id="btn-report-apply" class="btn-small">適用</button>
+              <button type="button" id="btn-report-clear" class="btn-text">全期間に戻す</button>
+            </div>
             <div id="report-numbers" class="stats report-stats"></div>
-            <div class="setting-group-title" style="margin-top:14px">直近14日のセッション数</div>
+            <div class="setting-group-title" id="report-daily-label" style="margin-top:14px">直近14日のセッション数</div>
             <div id="report-chart" class="report-chart"></div>
             <div class="setting-group-title">チーム別</div>
             <div class="admin-table-wrap">

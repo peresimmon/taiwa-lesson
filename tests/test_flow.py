@@ -1768,6 +1768,88 @@ async def test_realtime_stats(users):
     await ws2.close()
 
 
+def test_journal(users):
+    print("[29] 振り返りメモ(プライベートジャーナル)")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    h1 = {"Authorization": f"Bearer {users[1]['token']}"}
+    r = requests.post(f"{BASE}/api/journal", headers=h0, json={"body": "今日は最後まで聴けた"})
+    check("メモを作成", r.status_code == 201, r.text)
+    jid = r.json()["id"]
+    rows = requests.get(f"{BASE}/api/journal", headers=h0).json()
+    check("自分のメモ一覧に出る",
+          any(j["id"] == jid and j["body"] == "今日は最後まで聴けた" for j in rows), rows)
+    check("空のメモは422",
+          requests.post(f"{BASE}/api/journal", headers=h0, json={"body": "   "}).status_code == 422)
+    r = requests.put(f"{BASE}/api/journal/{jid}", headers=h0, json={"body": "編集後のメモ"})
+    check("メモを編集できる", r.status_code == 200, r.text)
+    check("編集が反映される",
+          any(j["id"] == jid and j["body"] == "編集後のメモ"
+              for j in requests.get(f"{BASE}/api/journal", headers=h0).json()))
+    # 他人(本人以外。管理者であっても)は一切アクセスできない
+    check("他人のメモは一覧に出ない",
+          all(j["id"] != jid for j in requests.get(f"{BASE}/api/journal", headers=h1).json()))
+    check("他人はメモを編集できない(404)",
+          requests.put(f"{BASE}/api/journal/{jid}", headers=h1, json={"body": "x"}).status_code == 404)
+    check("他人はメモを削除できない(404)",
+          requests.delete(f"{BASE}/api/journal/{jid}", headers=h1).status_code == 404)
+    check("本人はメモを削除できる",
+          requests.delete(f"{BASE}/api/journal/{jid}", headers=h0).status_code == 200)
+    check("削除後は一覧から消える",
+          all(j["id"] != jid for j in requests.get(f"{BASE}/api/journal", headers=h0).json()))
+
+
+def test_ical(users, admin_headers):
+    print("[30] イベントのiCalエクスポート")
+    h0 = {"Authorization": f"Bearer {users[0]['token']}"}
+    title = f"ical_{secrets.token_hex(3)}"
+    requests.post(f"{BASE}/api/events", headers=admin_headers,
+                  json={"title": title, "date": date.today().isoformat(), "start_time": "09:30"})
+    r = requests.get(f"{BASE}/api/events/ical", headers=h0)
+    check("iCalが取得できる", r.status_code == 200, r.text[:80])
+    check("Content-Typeがtext/calendar",
+          "text/calendar" in r.headers.get("content-type", ""), r.headers.get("content-type"))
+    body = r.text
+    check("VCALENDAR形式",
+          body.startswith("BEGIN:VCALENDAR") and "END:VCALENDAR" in body, body[:60])
+    check("作成したイベントが含まれる", f"SUMMARY:{title}" in body, body[:400])
+    check("時刻つきイベントはDTSTARTに時刻", "T093000" in body, body[:400])
+
+
+def test_admin_search_report(users, admin_headers):
+    print("[31] 管理: ユーザー検索・絞り込み・ページング + レポート期間")
+    # ページング(X-Total-Countヘッダ)
+    r = requests.get(f"{BASE}/api/admin/users?limit=1&offset=0", headers=admin_headers)
+    check("limitで1件に絞られる", r.status_code == 200 and len(r.json()) == 1, r.text)
+    total = int(r.headers.get("X-Total-Count", "0"))
+    check("X-Total-Countに総数が入る", total >= 2, r.headers.get("X-Total-Count"))
+    r2 = requests.get(f"{BASE}/api/admin/users?limit=1&offset=1", headers=admin_headers)
+    check("offsetで次のページに進む",
+          len(r2.json()) == 1 and r2.json()[0]["id"] != r.json()[0]["id"], r2.text)
+    # role絞り込み
+    r = requests.get(f"{BASE}/api/admin/users?role=system_admin", headers=admin_headers).json()
+    check("role絞り込み(system_adminのみ)",
+          len(r) >= 1 and all(u["role"] == "system_admin" for u in r), r)
+    # q検索(部分一致)
+    r = requests.get(f"{BASE}/api/admin/users?q=administrator", headers=admin_headers).json()
+    check("q検索でヒットする", any(u["username"] == "administrator" for u in r), r)
+    check("q検索は無関係を除外する",
+          all("administrator" in (u["username"] + u["display_name"] + u["email"]).lower() for u in r), r)
+    # active絞り込み(無効のみ)
+    r = requests.get(f"{BASE}/api/admin/users?active=false", headers=admin_headers).json()
+    check("active=falseは無効ユーザーのみ", all(u["is_active"] is False for u in r), r)
+    # フィルタ無し=全件(後方互換)
+    r = requests.get(f"{BASE}/api/admin/users", headers=admin_headers)
+    check("パラメータ無しは全件リスト", isinstance(r.json(), list) and len(r.json()) == total, len(r.json()))
+    # レポート期間指定
+    r = requests.get(f"{BASE}/api/admin/report", headers=admin_headers).json()
+    check("期間未指定はstart/end空・直近14日",
+          r["start"] == "" and r["end"] == "" and len(r["daily"]) == 14, r)
+    r = requests.get(f"{BASE}/api/admin/report?start=2000-01-01&end=2000-01-03", headers=admin_headers).json()
+    check("過去期間はセッション0・start反映",
+          r["total_sessions"] == 0 and r["start"] == "2000-01-01", r)
+    check("期間指定で日別がその範囲(3日)", len(r["daily"]) == 3, r)
+
+
 async def main():
     users = setup_users()
     room_id = await test_matching_flow(users)
@@ -1776,6 +1858,7 @@ async def main():
     await test_decline_flow(users)
     await test_disconnect_during_wait(users)
     await test_realtime_stats(users)
+    test_journal(users)
     test_dashboard(users)
     admin_headers = test_admin(users)
     test_multitenant(users, admin_headers)
@@ -1795,6 +1878,8 @@ async def main():
     test_leader_admin(users, admin_headers)
     test_announcement_ext(users, admin_headers)
     test_moderator_admin(users, admin_headers)
+    test_ical(users, admin_headers)
+    test_admin_search_report(users, admin_headers)
     test_demo_data(users, admin_headers)
     restore_admin_password(admin_headers)
     print(f"\n結果: {passed} passed, {failed} failed")

@@ -11,7 +11,16 @@ import random
 import re
 import secrets
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -29,6 +38,7 @@ from .database import (
     CallPair,
     Event,
     EventAttendance,
+    JournalEntry,
     Post,
     Report,
     Room,
@@ -178,9 +188,33 @@ def audit(db: Session, actor: User, action: str, detail: str = "") -> None:
     )
 
 
+# サイトごとの設定キャッシュ。1リクエストで設定を何度も読むため、サイト単位で全設定を
+# 1クエリにまとめてメモリに保持する(get_settingのN+1を解消)。書き込み時に無効化する。
+# ※プロセス内キャッシュなので「単一ワーカー・単一インスタンス」運用が前提(docs/TODO.md 参照)
+_settings_cache: dict[int, dict[str, str]] = {}
+
+
+def _site_settings(db: Session, site_id: int) -> dict[str, str]:
+    """サイトの全設定を DEFAULT_SETTINGS にマージして返す(1クエリ+キャッシュ)"""
+    cached = _settings_cache.get(site_id)
+    if cached is None:
+        cached = dict(DEFAULT_SETTINGS)
+        for row in db.query(Setting).filter(Setting.site_id == site_id).all():
+            cached[row.key] = row.value
+        _settings_cache[site_id] = cached
+    return cached
+
+
+def invalidate_settings_cache(site_id: int | None = None) -> None:
+    """設定キャッシュを破棄する(設定変更・サイト削除時)。site_id=Noneで全破棄"""
+    if site_id is None:
+        _settings_cache.clear()
+    else:
+        _settings_cache.pop(site_id, None)
+
+
 def get_setting(db: Session, site_id: int, key: str) -> str:
-    row = db.get(Setting, (site_id, key))
-    return row.value if row else DEFAULT_SETTINGS.get(key, "")
+    return _site_settings(db, site_id).get(key, DEFAULT_SETTINGS.get(key, ""))
 
 
 def set_setting(db: Session, site_id: int, key: str, value: str) -> None:
@@ -189,6 +223,7 @@ def set_setting(db: Session, site_id: int, key: str, value: str) -> None:
         row.value = value
     else:
         db.add(Setting(site_id=site_id, key=key, value=value))
+    invalidate_settings_cache(site_id)  # 次回読み込みで最新を反映
 
 
 def create_site_admin(db: Session, site: Site) -> tuple[User, str]:
@@ -777,6 +812,83 @@ def my_surveys(user: User = Depends(active_user), db: Session = Depends(get_db))
         }
         for s in rows
     ]
+
+
+# --- 振り返りメモ(プライベートジャーナル) ----------------------------------------
+
+
+class JournalIn(BaseModel):
+    """振り返りメモの入力"""
+    body: str = Field(min_length=1, max_length=4000)
+
+
+def _journal_or_404(db: Session, user: User, entry_id: int) -> JournalEntry:
+    """本人のメモだけを取得する(他人のメモには一切アクセスさせない)"""
+    entry = db.get(JournalEntry, entry_id)
+    if entry is None or entry.user_id != user.id:
+        raise HTTPException(status_code=404, detail="メモが見つかりません")
+    return entry
+
+
+@app.get("/api/journal")
+def list_journal(user: User = Depends(active_user), db: Session = Depends(get_db)):
+    """自分の振り返りメモ一覧(新しい順)。本人のみ"""
+    rows = (
+        db.query(JournalEntry)
+        .filter(JournalEntry.user_id == user.id)
+        .order_by(JournalEntry.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    return [
+        {
+            "id": e.id,
+            "body": e.body,
+            "created_at": e.created_at.isoformat(),
+            "updated_at": e.updated_at.isoformat(),
+        }
+        for e in rows
+    ]
+
+
+def _clean_journal_body(body: JournalIn) -> str:
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="メモを入力してください")
+    return text
+
+
+@app.post("/api/journal", status_code=201)
+def create_journal(
+    body: JournalIn, user: User = Depends(active_user), db: Session = Depends(get_db)
+):
+    entry = JournalEntry(user_id=user.id, body=_clean_journal_body(body))
+    db.add(entry)
+    db.commit()
+    return {"ok": True, "id": entry.id}
+
+
+@app.put("/api/journal/{entry_id}")
+def update_journal(
+    entry_id: int,
+    body: JournalIn,
+    user: User = Depends(active_user),
+    db: Session = Depends(get_db),
+):
+    entry = _journal_or_404(db, user, entry_id)
+    entry.body = _clean_journal_body(body)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/journal/{entry_id}")
+def delete_journal(
+    entry_id: int, user: User = Depends(active_user), db: Session = Depends(get_db)
+):
+    entry = _journal_or_404(db, user, entry_id)
+    db.delete(entry)
+    db.commit()
+    return {"ok": True}
 
 
 # --- 通報・ブロック・警告(トラスト&セーフティ) -----------------------------------
@@ -1793,6 +1905,75 @@ def list_today_events(
     return _event_payloads(db, user, rows)
 
 
+def _ical_escape(text: str) -> str:
+    """iCal(RFC5545)のテキスト値をエスケープする"""
+    return (
+        text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+        .replace("\n", "\\n")
+    )
+
+
+@app.get("/api/events/ical")
+def export_events_ical(user: User = Depends(active_user), db: Session = Depends(get_db)):
+    """自分に見える予定(サイト全体 + 所属チーム)を iCalendar(.ics)で書き出す。
+    カレンダーアプリに取り込めば、各アプリのネイティブ機能でリマインド通知も受けられる"""
+    from datetime import date as _date, timedelta
+
+    my_team_ids = [
+        m.team_id for m in db.query(TeamMember).filter(TeamMember.user_id == user.id).all()
+    ]
+    since = (_date.today() - timedelta(days=30)).isoformat()  # 直近30日以降の予定に絞る
+    q = (
+        db.query(Event)
+        .join(User, Event.user_id == User.id)
+        .filter(User.site_id == user.site_id, Event.date >= since)
+    )
+    if my_team_ids:
+        q = q.filter((Event.team_id.is_(None)) | (Event.team_id.in_(my_team_ids)))
+    else:
+        q = q.filter(Event.team_id.is_(None))
+    events = q.order_by(Event.date, Event.start_time).limit(500).all()
+    room_names = {
+        r.id: r.name for r in db.query(Room).filter(Room.site_id == user.site_id).all()
+    }
+    site = db.get(Site, user.site_id)
+    cal_name = (site.name if site else "対話のおけいこ")
+    stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//taiwa-lesson//JP//", "CALSCALE:GREGORIAN",
+        f"X-WR-CALNAME:{_ical_escape(cal_name)}",
+    ]
+    for e in events:
+        ymd = e.date.replace("-", "")
+        lines.append("BEGIN:VEVENT")
+        lines.append(f"UID:event-{e.id}@taiwa-lesson")
+        lines.append(f"DTSTAMP:{stamp}")
+        if e.start_time and re.fullmatch(r"\d{2}:\d{2}", e.start_time):
+            hm = e.start_time.replace(":", "") + "00"
+            end_h = (int(e.start_time[:2]) + 1) % 24
+            lines.append(f"DTSTART:{ymd}T{hm}")
+            lines.append(f"DTEND:{ymd}T{end_h:02d}{e.start_time[3:5]}00")
+        else:
+            lines.append(f"DTSTART;VALUE=DATE:{ymd}")
+        lines.append(f"SUMMARY:{_ical_escape(e.title)}")
+        desc = []
+        if e.recurrence:
+            desc.append(f"繰り返し: {e.recurrence}")
+        if e.room_id and room_names.get(e.room_id):
+            lines.append(f"LOCATION:{_ical_escape(room_names[e.room_id])}")
+            desc.append(f"ルーム: {room_names[e.room_id]}")
+        if desc:
+            lines.append(f"DESCRIPTION:{_ical_escape(' / '.join(desc))}")
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+    ics = "\r\n".join(lines) + "\r\n"
+    return Response(
+        content=ics,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="taiwa-lesson.ics"'},
+    )
+
+
 @app.post("/api/events/{event_id}/attendance")
 def set_attendance(
     event_id: int,
@@ -1890,9 +2071,37 @@ def _can_manage_event(db: Session, user: User, event: Event) -> bool:
     return False
 
 
+def _team_event_mails(db: Session, event: Event, actor: User) -> list[tuple[str, str, str]]:
+    """チーム予定の作成通知メール(宛先・件名・本文)の一覧を作る。サイト全体予定や
+    メール未登録者は対象外。実送信は呼び出し側がバックグラウンドで行う(SMTP未設定なら何もしない)"""
+    if not event.team_id:
+        return []
+    team = db.get(Team, event.team_id)
+    if team is None:
+        return []
+    member_ids = [
+        m.user_id for m in db.query(TeamMember).filter(TeamMember.team_id == event.team_id)
+    ]
+    members = (
+        db.query(User)
+        .filter(User.id.in_(member_ids), User.id != actor.id, User.is_active.is_(True))
+        .all()
+    )
+    when = event.date + (f" {event.start_time}" if event.start_time else "")
+    recur = f"(繰り返し: {event.recurrence}) " if event.recurrence else ""
+    subject = f"[{team.name}] 新しい予定: {event.title}"
+    body_text = (
+        f"{team.name} に新しい予定が追加されました。\n\n"
+        f"{recur}{event.title}\n日時: {when}\n\n"
+        "アプリのカレンダーから参加/不参加を登録できます。"
+    )
+    return [(u.email, subject, body_text) for u in members if u.email]
+
+
 @app.post("/api/events", status_code=201)
 def create_event(
     body: EventIn,
+    background: BackgroundTasks = None,  # HTTP経由ではFastAPIが注入。デモ生成等の直接呼び出しではNone
     user: User = Depends(active_user),
     db: Session = Depends(get_db),
 ):
@@ -1913,6 +2122,9 @@ def create_event(
         )
         db.add(event)
         db.commit()
+        if background:
+            for to, subj, b in _team_event_mails(db, event, user):
+                background.add_task(send_mail, to, subj, b)  # SMTP未設定なら何もしない
         return {"ok": True, "id": event.id, "count": 1}
 
     # 繰り返し: 各回を実体化し、同じseries_idでまとめる
@@ -1937,6 +2149,10 @@ def create_event(
         if first_id is None:
             first_id = ev.id
     db.commit()
+    first = db.get(Event, first_id) if first_id else None
+    if background and first:
+        for to, subj, b in _team_event_mails(db, first, user):
+            background.add_task(send_mail, to, subj, b)  # 繰り返しはシリーズで1通だけ通知
     return {"ok": True, "id": first_id, "count": len(dates), "series_id": series}
 
 
@@ -2096,13 +2312,39 @@ def _user_rows(db: Session, site_id: int) -> list[dict]:
 
 
 @app.get("/api/admin/users")
-def admin_list_users(admin: User = Depends(admin_or_leader_user), db: Session = Depends(get_db)):
-    """ユーザー一覧。モデレータ以上は自サイト全員、チームリーダーは管理対象(率いるチームのメンバー)のみ"""
+def admin_list_users(
+    response: Response,
+    q: str = "",
+    role: str = "",
+    active: str = "",
+    limit: int | None = None,
+    offset: int = 0,
+    admin: User = Depends(admin_or_leader_user),
+    db: Session = Depends(get_db),
+):
+    """ユーザー一覧。モデレータ以上は自サイト全員、チームリーダーは管理対象(率いるチームのメンバー)のみ。
+    q(ユーザー名/表示名/メール部分一致)・role・active で絞り込み、limit/offset でページング。
+    総件数は `X-Total-Count` ヘッダで返す(本文は従来どおりリスト。limit未指定なら全件=後方互換)"""
     rows = _user_rows(db, admin.site_id)
-    if _is_moderator(admin):
-        return rows
-    managed = _led_team_member_ids(db, admin)
-    return [r for r in rows if r["id"] in managed]
+    if not _is_moderator(admin):
+        managed = _led_team_member_ids(db, admin)
+        rows = [r for r in rows if r["id"] in managed]
+    ql = q.strip().lower()
+    if ql:
+        rows = [
+            r for r in rows
+            if ql in r["username"].lower()
+            or ql in r["display_name"].lower()
+            or ql in r["email"].lower()
+        ]
+    if role:
+        rows = [r for r in rows if r["role"] == role]
+    if active in ("true", "false"):
+        rows = [r for r in rows if r["is_active"] == (active == "true")]
+    response.headers["X-Total-Count"] = str(len(rows))
+    if limit is not None and limit > 0:
+        rows = rows[max(0, offset): max(0, offset) + limit]
+    return rows
 
 
 @app.post("/api/admin/users", status_code=201)
@@ -2193,10 +2435,17 @@ def admin_bulk_users(
 
 
 @app.get("/api/admin/report")
-def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depends(get_db)):
+def admin_report(
+    start: str = "",
+    end: str = "",
+    admin: User = Depends(admin_or_leader_user),
+    db: Session = Depends(get_db),
+):
     """利用レポート(セッション数・評価・日別推移・チーム別)。サイト管理者は自サイト全体、
-    チームリーダーは管理対象(率いるチームとそのメンバー)のみにスコープされる"""
-    from datetime import timedelta
+    チームリーダーは管理対象(率いるチームとそのメンバー)のみにスコープされる。
+    start/end(YYYY-MM-DD・任意)で集計期間を絞り込める(総数・平均評価・日別・チーム別が対象。
+    直近7/30日とユーザー数は期間に依らない)"""
+    from datetime import date as date_cls, datetime as dt, time as time_cls, timedelta
 
     from sqlalchemy import func
 
@@ -2205,28 +2454,48 @@ def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depe
     scope_ids = None if full_scope else _led_team_member_ids(db, admin)
     scope_team_ids = None if full_scope else _led_team_ids(db, admin)
 
-    def survey_q():
+    def parse_date(s: str):
+        try:
+            return date_cls.fromisoformat(s)
+        except ValueError:
+            return None
+
+    start_d = parse_date(start)
+    end_d = parse_date(end)
+
+    def with_period(q):
+        if start_d:
+            q = q.filter(Survey.created_at >= dt.combine(start_d, time_cls.min))
+        if end_d:
+            q = q.filter(Survey.created_at < dt.combine(end_d + timedelta(days=1), time_cls.min))
+        return q
+
+    def scoped_q():
         q = db.query(Survey).join(User, Survey.user_id == User.id).filter(User.site_id == sid)
         if scope_ids is not None:
             q = q.filter(Survey.user_id.in_(scope_ids or {-1}))
         return q
 
+    def survey_q():  # スコープ + 期間
+        return with_period(scoped_q())
+
     now = utcnow().replace(tzinfo=None)
     avg_rating = survey_q().with_entities(func.avg(Survey.rating)).scalar()
-    # 直近14日の日別セッション数
-    since = now - timedelta(days=13)
+    # 日別セッション数: 期間指定があればその範囲(最大92日)、なければ直近14日
+    if start_d and end_d and start_d <= end_d:
+        span = (end_d - start_d).days
+        first = end_d - timedelta(days=91) if span > 91 else start_d
+        days_list = [end_d - timedelta(days=i) for i in range((end_d - first).days, -1, -1)]
+    else:
+        days_list = [(now.date() - timedelta(days=i)) for i in range(13, -1, -1)]
     daily_rows = dict(
         survey_q()
         .with_entities(func.date(Survey.created_at), func.count(Survey.id))
-        .filter(Survey.created_at >= since.replace(hour=0, minute=0, second=0))
         .group_by(func.date(Survey.created_at))
         .all()
     )
-    daily = []
-    for i in range(13, -1, -1):
-        d = (now - timedelta(days=i)).date().isoformat()
-        daily.append({"date": d, "count": daily_rows.get(d, 0)})
-    # チーム別(リーダーは率いるチームのみ)
+    daily = [{"date": d.isoformat(), "count": daily_rows.get(d.isoformat(), 0)} for d in days_list]
+    # チーム別(リーダーは率いるチームのみ)。セッション数は期間を反映
     team_q = db.query(Team).filter(Team.site_id == sid)
     if scope_team_ids is not None:
         team_q = team_q.filter(Team.id.in_(scope_team_ids or {-1}))
@@ -2236,7 +2505,8 @@ def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depe
             m.user_id for m in db.query(TeamMember).filter(TeamMember.team_id == team.id).all()
         ]
         sessions = (
-            db.query(Survey).filter(Survey.user_id.in_(member_ids)).count() if member_ids else 0
+            with_period(db.query(Survey).filter(Survey.user_id.in_(member_ids))).count()
+            if member_ids else 0
         )
         teams.append({"name": team.name, "members": len(member_ids), "sessions": sessions})
 
@@ -2245,12 +2515,14 @@ def admin_report(admin: User = Depends(admin_or_leader_user), db: Session = Depe
     return {
         "total_users": total_users,
         "total_sessions": survey_q().count(),
-        "sessions_7d": survey_q().filter(Survey.created_at >= now - timedelta(days=7)).count(),
-        "sessions_30d": survey_q().filter(Survey.created_at >= now - timedelta(days=30)).count(),
+        "sessions_7d": scoped_q().filter(Survey.created_at >= now - timedelta(days=7)).count(),
+        "sessions_30d": scoped_q().filter(Survey.created_at >= now - timedelta(days=30)).count(),
         "avg_rating": round(avg_rating, 2) if avg_rating is not None else None,
         "daily": daily,
         "teams": teams,
         "scoped": not full_scope,  # リーダーは管理対象のみのレポート
+        "start": start_d.isoformat() if start_d else "",
+        "end": end_d.isoformat() if end_d else "",
     }
 
 
@@ -2482,6 +2754,7 @@ def admin_delete_user(
         ).delete(synchronize_session=False)
     db.query(EventAttendance).filter(EventAttendance.user_id == user_id).delete()
     db.query(AnnouncementRead).filter(AnnouncementRead.user_id == user_id).delete()
+    db.query(JournalEntry).filter(JournalEntry.user_id == user_id).delete()
     db.query(Event).filter(Event.user_id == user_id).delete()
     db.query(Post).filter(Post.user_id == user_id).delete()
     db.query(TeamMember).filter(TeamMember.user_id == user_id).delete()
@@ -2586,6 +2859,7 @@ def admin_put_settings(
     _apply_settings(db, admin.site_id, body, allow_site_wide=_is_site_admin(admin))
     audit(db, admin, "settings_update", "サイト設定を変更")
     db.commit()
+    invalidate_settings_cache(admin.site_id)  # コミット後に再度無効化(並行読込のstale repopulate対策)
     return {"ok": True}
 
 
@@ -2814,6 +3088,9 @@ def _delete_site_data(db: Session, site: Site) -> None:
         db.query(AnnouncementRead).filter(
             AnnouncementRead.user_id.in_(user_ids)
         ).delete(synchronize_session=False)
+        db.query(JournalEntry).filter(
+            JournalEntry.user_id.in_(user_ids)
+        ).delete(synchronize_session=False)
         db.query(Event).filter(Event.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(Post).filter(Post.user_id.in_(user_ids)).delete(synchronize_session=False)
         db.query(TeamMember).filter(TeamMember.user_id.in_(user_ids)).delete(synchronize_session=False)
@@ -2941,6 +3218,7 @@ def sysadmin_put_site_settings(
     _apply_settings(db, site_id, body)
     audit(db, admin, "settings_update", f"サイト設定を変更({site.slug})")
     db.commit()
+    invalidate_settings_cache(site_id)  # コミット後に再度無効化(並行読込のstale repopulate対策)
     return {"ok": True}
 
 

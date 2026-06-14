@@ -86,6 +86,19 @@ class Survey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class JournalEntry(Base):
+    """振り返りメモ(プライベートジャーナル)。本人だけが閲覧・編集できる自分用の気づき記録。
+    アンケート(相手への評価)とは別物で、相手や管理者には一切共有されない"""
+
+    __tablename__ = "journal_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Announcement(Base):
     """運営からのお知らせ(サイトごと)"""
 

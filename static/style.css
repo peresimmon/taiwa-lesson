@@ -624,6 +624,32 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #screen-admin.leader-only #btn-export-csv,
 #screen-admin.leader-only #admin-team-form { display: none !important; }
 
+/* 管理画面の検索・絞り込みバー / ページャ / レポート期間 */
+.admin-filter-bar {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 12px;
+}
+.admin-filter-bar input[type="search"] { flex: 1 1 220px; min-width: 160px; }
+.admin-filter-bar input, .admin-filter-bar select {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--fg);
+}
+.admin-pager {
+  display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 10px;
+}
+.report-period label { display: inline-flex; align-items: center; gap: 4px; }
+
+/* 待機画面の人数表示 */
+.waiting-stats { margin-top: 6px; line-height: 1.7; }
+
+/* カレンダー操作(作成 / iCal) */
+.cal-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+
+/* 振り返りメモ */
+#journal-form textarea { width: 100%; resize: vertical; }
+.journal-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.journal-body { white-space: pre-wrap; word-break: break-word; }
+.journal-meta { display: flex; gap: 10px; align-items: center; font-size: 0.8rem; color: var(--muted); }
+.journal-edit { width: 100%; resize: vertical; }
+
 /* モデレータが管理画面を開いたとき、サイト管理者専用の要素を隠す
    (ユーザー管理タブと「サイト全体の設定」パネル) */
 #screen-admin.moderator-only .admin-tab[data-page="users"],
